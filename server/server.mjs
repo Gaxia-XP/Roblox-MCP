@@ -180,6 +180,32 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
+// ---------------------------------------------------------------------------
+// MCP value coercion
+// Some tools (set_property, set_attribute, tween_property, ...) accept an
+// arbitrary `value`/`goal` field with no JSON Schema type (because the value
+// can be a number, string, boolean, Vector3 list, Color3 list, UDim2 list,
+// etc.). Some MCP clients stringify such untyped values when they're lists.
+// We detect that here and JSON-parse anything that obviously looks like a
+// list or object literal. Already-typed values pass through unchanged.
+// ---------------------------------------------------------------------------
+
+function coerceMcpValue(v) {
+  if (typeof v !== "string" || v.length < 2) return v;
+  const first = v[0];
+  if (first !== "[" && first !== "{") return v;
+  try { return JSON.parse(v); } catch { return v; }
+}
+
+// Coerce every value inside a property dict. Used by tools that accept a
+// `{ propName: value, ... }` map (create_instance.properties, tween_multi.properties).
+function coerceProps(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) out[k] = coerceMcpValue(v);
+  return out;
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
 
@@ -310,7 +336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
       break;
     case "set_property":
-      payload = { path: args.path, property: args.property, value: args.value };
+      payload = { path: args.path, property: args.property, value: coerceMcpValue(args.value) };
       break;
     case "delete_instance":
       payload = { path: args.path };
@@ -338,7 +364,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         className: args.class_name,
         parent: args.parent ?? "Workspace",
         name: args.name,
-        properties: args.properties ?? {},
+        properties: coerceProps(args.properties ?? {}),
       };
       break;
     case "find_instances":
@@ -363,7 +389,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       payload = {
         path: args.path,
         name: args.name,
-        value: args.value,
+        value: coerceMcpValue(args.value),
         valueType: args.type,
         remove: args.remove ?? false,
       };
@@ -371,7 +397,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "find_by_attribute":
       payload = {
         name: args.name,
-        value: args.value,
+        value: coerceMcpValue(args.value),
         root: args.root ?? "game",
         maxResults: args.max_results ?? 50,
       };
@@ -393,7 +419,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
       break;
     case "batch_set_property":
-      payload = { updates: args.updates };
+      payload = {
+        updates: Array.isArray(args.updates)
+          ? args.updates.map(u => ({ ...u, value: coerceMcpValue(u?.value) }))
+          : args.updates,
+      };
       break;
     case "array_clone":
       payload = {
@@ -416,7 +446,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     case "tween_multi":
       payload = {
         path: args.path,
-        properties: args.properties,
+        properties: coerceProps(args.properties),
         duration: args.duration ?? 1,
         easing_style: args.easing_style,
         easing_direction: args.easing_direction,
@@ -617,7 +647,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       break;
     case "tween_property":
       payload = {
-        path: args.path, property: args.property, goal: args.goal,
+        path: args.path, property: args.property, goal: coerceMcpValue(args.goal),
         duration: args.duration, easing_style: args.easing_style,
         easing_direction: args.easing_direction, repeat_count: args.repeat_count,
         reverses: args.reverses, delay: args.delay, wait: args.wait,
