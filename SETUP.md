@@ -162,10 +162,12 @@ C:\Users\chaho\roblox-multi-ai\
 ├── .mcp.json                      ← MCP config (project scope)
 ├── sync-plugin.ps1                ← copy plugin → Studio install folder
 ├── server/
-│   └── server.mjs                 ← MCP server (Node.js, 30 tools)
+│   ├── server.mjs                 ← MCP server entrypoint + HTTP bridge + dispatch (~20 KB)
+│   ├── tools.mjs                  ← TOOLS array — 76 tool schemas (~50 KB)
+│   └── os-tools.mjs               ← Win32/PowerShell helpers (screenshots, input) (~22 KB)
 ├── plugin/
 │   └── MultiAIPlugin.lua          ← Plugin Studio (auto-connect + status)
-├── .claude/agents/                ← Claude Code subagents
+├── .claude/agents/                ← Claude Code subagents (designer/builder/scripter/ui/tester)
 ├── .codex/                        ← Codex CLI config + agents
 └── .gemini/                       ← Gemini CLI config + agents
 ```

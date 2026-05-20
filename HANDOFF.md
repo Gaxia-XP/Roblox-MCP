@@ -40,7 +40,7 @@ roblox-multi-ai/
 ├── sync-plugin.ps1                ← sync plugin source → Studio install folder
 ├── server/
 │   ├── server.mjs                 ← MCP server entrypoint + HTTP bridge + dispatch switch (~20 KB)
-│   ├── tools.mjs                  ← TOOLS array — all 73 tool schemas (~50 KB)
+│   ├── tools.mjs                  ← TOOLS array — all 76 tool schemas (~50 KB)
 │   ├── os-tools.mjs               ← Win32/PowerShell helpers: simulateInputOS, screenshotDiff, captureStudioWindow, captureScreenshot (~22 KB)
 │   ├── package.json               ← @modelcontextprotocol/sdk dep
 │   └── node_modules/
@@ -130,6 +130,7 @@ claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\s
        payload = { ... extract from args ... };
        break;
      ```
+   - ⚠️ **Untyped value/goal/properties fields:** ถ้า schema มี `value: {}` หรือ `goal: {}` หรือ `properties: { type: "object" }` ที่ inner values ไม่มี type → **ต้อง wrap ผ่าน `coerceMcpValue(args.value)`** (หรือ `coerceProps(args.properties)` สำหรับ dict) ใน dispatch case. ไม่งั้น list values ([x,y,z]) จะถูก client บางตัว stringify เป็น `"[x,y,z]"` → plugin reject "Vector3 expected, got string". ดูตัวอย่างที่ commit `22acc0a` (set_property, set_attribute, tween_property, batch_set_property, tween_multi, create_instance.properties, find_by_attribute)
 
 3. **Test:**
    ```powershell
@@ -143,10 +144,12 @@ claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\s
 ## 7. Conventions ที่ต้องระวัง
 
 - **Plugin = source of truth:** อย่าแก้ไฟล์ใน `%LOCALAPPDATA%\Roblox\Plugins\` ตรงๆ — แก้ที่ `plugin/` แล้ว sync
-- **`run_luau` env:** มี `os`, `BrickColor`, `Color3`, `Vector3`, etc. — ดู whitelist ใน handler `run_luau`. ถ้าต้องใช้อย่างอื่นต้องเพิ่ม
+- **`run_luau` env:** explicit globals สำหรับ Vector3/CFrame/UDim2/Color3/BrickColor/TweenInfo/Random/Region3/Ray/NumberRange/NumberSequence/ColorSequence/Rect/Font/PhysicalProperties + libs (`task`, `math`, `string`, `table`, `os`, `buffer`, `utf8`, `bit32`, `coroutine`) — ดู handler `run_luau` ใน plugin
 - **Position vs Bounds:** ใช้ `get_bounds` ไม่ใช่แค่ `Position` เมื่อต้องการ edges (gap math, adjacency)
 - **OS-level tools focus:** `simulate_input` + `capture_studio_window` ต้องการ Studio window อยู่บนสุด (auto-focus via SetForegroundWindow)
 - **Tester restriction:** `roblox-tester` agent **ไม่มี** `set_property` / `run_luau` ใน tools list ของมัน — บังคับให้ใช้ input simulation จริง
+- **Gaxia framework:** project มี Gaxia bootstrap + AntiCheat module ใน `ServerScriptService.Gaxia_ServerBootstrap`. AntiCheat kick player ทันทีเมื่อเขียน `player.leaderstats.X.Value` ตรงๆ — scout `Gaxia_Packages_Server` หา public stat API ก่อนเขียน scripts ที่แก้ leaderstats
+- **Git workflow:** project มี version control แล้ว (initial commit `68374b9`). Commit หลังแต่ละ phase ทำงาน — server changes ต้อง `node --check` ก่อน, plugin changes ต้อง sync + reload
 
 ## 8. Known Issues / Limitations
 
@@ -159,6 +162,7 @@ claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\s
 | Plugin button label ไม่อัปเดต emoji หลังสร้าง | Studio API limitation — toolbar button title fixed at creation |
 | Plugin icon path บางตัว 404 ใน Studio version ใหม่ | Cosmetic — ใช้ play.png ที่ยืนยันแล้วว่ามี |
 | `tween_property` primitive coerce | ✅ แก้แล้ว (smart type detection from current value) |
+| Untyped `value`/`goal` fields stringified by MCP client → "Vector3 expected, got string" | ✅ แก้แล้วที่ commit `22acc0a` — `coerceMcpValue` helper ใน dispatch layer parse string ที่ขึ้นต้น `[` หรือ `{` กลับเป็น JSON. ครอบคลุม set_property, set_attribute, find_by_attribute, tween_property, tween_multi, batch_set_property, create_instance |
 | Claude Code subagent (`roblox-tester` etc.) load fail ถ้าไม่ได้ launch จาก project root | ใช้ `claude mcp add --scope user` หรือ cd เข้า project ก่อน |
 
 ## 9. Debugging
