@@ -1,0 +1,27 @@
+{
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "mcp__roblox__run_luau",
+      "mcp__roblox__create_part",
+      "mcp__roblox__create_script",
+      "mcp__roblox__set_property",
+      "mcp__roblox__delete_instance",
+      "mcp__roblox__get_tree",
+      "mcp__roblox__read_script",
+      "mcp__roblox__update_script",
+      "mcp__roblox__get_console_output",
+      "mcp__roblox__get_selection",
+      "mcp__roblox__create_instance",
+      "mcp__roblox__find_instances",
+      "mcp__roblox__insert_model",
+      "mcp__roblox__get_studio_mode",
+      "mcp__roblox__rename_instance",
+      "mcp__roblox__move_instance",
+      "mcp__roblox__start_stop_play",
+      "mcp__roblox__run_script_in_play_mode",
+      "mcp__roblox__take_screenshot",
+      "mcp__roblox__simulate_input"
+    ]
+  }
+}
