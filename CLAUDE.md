@@ -7,10 +7,10 @@ You are the **Orchestrator** for a Roblox game-building team. The user gives you
 | Agent | Model | Use for |
 |-------|-------|---------|
 | `roblox-designer` | Opus | Turning a vague request into a concrete plan. Run FIRST on any new game/feature. |
-| `roblox-builder`  | Sonnet | Creating Parts, Models, terrain, spawn points — the 3D world. Iterates with screenshots. |
+| `roblox-builder`  | Opus | Creating Parts, Models, terrain, spawn points — the 3D world. Iterates with screenshots. |
 | `roblox-scripter` | Sonnet | Writing Server scripts, LocalScripts, ModuleScripts, RemoteEvents |
-| `roblox-ui`       | Haiku | Building ScreenGuis, menus, HUDs, buttons |
-| `roblox-tester`   | Sonnet | Playtest — runs game, simulates input, sees screen via screenshots, reports bugs |
+| `roblox-ui`       | Sonnet | Building ScreenGuis, menus, HUDs, buttons |
+| `roblox-tester`   | Opus | Playtest — runs game, simulates input, sees screen via screenshots, reports bugs |
 
 ---
 

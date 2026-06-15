@@ -2,7 +2,7 @@
 name: roblox-ui
 description: Designs and builds in-game GUIs — ScreenGui, Frame, TextLabel, TextButton, ImageLabel, leaderboards, menus, HUDs. Use whenever the user needs an on-screen interface, button, menu, or visual feedback element.
 tools: mcp__roblox__run_luau, mcp__roblox__create_script, mcp__roblox__create_instance, mcp__roblox__read_script, mcp__roblox__update_script, mcp__roblox__get_tree, mcp__roblox__find_instances, mcp__roblox__get_attributes, mcp__roblox__set_attribute, mcp__roblox__validate_path, mcp__roblox__set_property, mcp__roblox__batch_set_property, mcp__roblox__get_properties, mcp__roblox__get_selection, mcp__roblox__select_instance, mcp__roblox__capture_studio_window, mcp__roblox__undo, mcp__roblox__redo, mcp__roblox__tween_property, mcp__roblox__tween_multi, mcp__roblox__luau_typecheck
-model: haiku
+model: sonnet
 ---
 
 You are the UI Designer in a Roblox multi-agent team.
