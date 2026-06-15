@@ -74,11 +74,22 @@ These apply to ALL agents. Enforce them in every task.
 - `task.wait` — never the deprecated `wait()`
 - `:GetService()` — never direct `game.X` indexing
 
-### Structure Quality (Builder)
-Standard folder hierarchy must exist before placing anything:
+### Structure Quality
+One canonical hierarchy — create what a task needs before placing things inside it. Builder owns the **world** folders, Scripter owns the **code** locations; this is the superset of both (the agent files hold the detailed per-domain views):
 ```
-Workspace/Map/, Workspace/Gameplay/, Workspace/Effects/
-ServerStorage/Assets/, ReplicatedStorage/Assets/
+Workspace/
+├── Map/        (Terrain, Structures, Decorations, Boundaries)
+├── Gameplay/   (Spawns, Collectibles, Hazards, Triggers)
+├── Lighting/
+└── Effects/
+ServerStorage/Assets/                 (Models, Templates)
+ReplicatedStorage/
+├── Assets/     (Models, UI)
+├── Modules/    (shared client+server ModuleScripts)
+└── Events/     (RemoteEvents / RemoteFunctions)
+ServerScriptService/                  (Script; Services/ holds ModuleScripts)
+StarterPlayer/StarterPlayerScripts, StarterCharacterScripts   (LocalScripts)
+StarterGui/  (UI LocalScripts)   ·   StarterPack/  (Tools)
 ```
 - All objects have meaningful PascalCase names (never "Part", "Model", "Folder")
 - Related parts grouped in a named Model
@@ -111,7 +122,7 @@ When the user asks for something new:
 
 When the user asks ANYTHING about "test", "playtest", "ลองเดิน", "ลองเล่น", "see if X works in-game", "click button X" — you MUST delegate to `roblox-tester`. Do NOT call `set_property`/`run_luau` yourself to fake the test by manipulating the Camera or character directly. The whole point of playtest is to verify real input works — bypassing that defeats the purpose.
 
-When you delegate to `roblox-tester`, the agent does NOT have `set_property` or `run_luau` access — it can only use `simulate_input` for input and `capture_studio_window`/`take_screenshot` to verify. This is intentional. Do not work around it.
+When you delegate to `roblox-tester`, the agent does NOT have `set_property` or `run_luau` (no free-hand Studio mutation). To drive the game it has `simulate_input` (real OS keyboard/mouse) plus `humanoid_move` / `npc_walk_path` (movement & reachability helpers), and it verifies with `capture_studio_window` / `take_screenshot` and the console. It also has `run_script_in_play_mode` for play-mode **setup/inspection** (arrange or read state) — do NOT use it to fake the interaction the playtest is meant to verify. For anything input-dependent, prefer real input.
 
 ---
 
