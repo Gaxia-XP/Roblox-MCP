@@ -47,6 +47,11 @@ function submit(type, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
     const cmd = { id, type, payload };
     const timeout = setTimeout(() => {
       inFlight.delete(id);
+      // Also drop it from the queue if it was never polled — otherwise the
+      // plugin would pick up a timed-out command later and execute it
+      // out-of-band (double-execution of mutating tools) with no caller.
+      const qi = pending.findIndex((c) => c.id === id);
+      if (qi >= 0) pending.splice(qi, 1);
       resolve({ error: `timeout after ${timeoutMs}ms — is the Roblox Studio plugin connected?` });
     }, timeoutMs);
     inFlight.set(id, { resolve, timeout });
@@ -720,9 +725,33 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true };
   }
 
-  const result = await submit(name, payload);
+  // Long-running, plugin-side-bounded tools need a server timeout that clears
+  // their own deadline plus slack — otherwise the fixed 30s wall fires while
+  // the handler is still legitimately running and its real result is dropped.
+  const result = await submit(name, payload, toolTimeoutMs(name, args));
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 });
+
+// Per-tool wall-clock timeout. Tools that forward their own `timeout`/`duration`
+// to the plugin get that budget + slack; everything else uses the 30s default.
+function toolTimeoutMs(name, args) {
+  const SLACK_MS = 15_000;
+  const secs = (v, def) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : def;
+  };
+  switch (name) {
+    case "run_script_in_play_mode":
+    case "npc_walk_path":
+      return secs(args.timeout, 30) * 1000 + SLACK_MS;
+    case "profile_play_mode":
+      return secs(args.duration, 10) * 1000 + SLACK_MS;
+    case "humanoid_move":
+      return secs(args.duration, 1) * 1000 + SLACK_MS;
+    default:
+      return DEFAULT_TIMEOUT_MS;
+  }
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
