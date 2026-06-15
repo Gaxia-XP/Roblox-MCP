@@ -83,8 +83,8 @@ You → Orchestrator (Claude Code) → [Designer / Builder / Scripter / UI / Tes
 roblox-multi-ai/
 ├── README.md                  ← ไฟล์นี้
 ├── SETUP.md                   ← ติดตั้งทีละขั้น
-├── HANDOFF.md                 ← สรุปสถานะโปรเจกต์
 ├── CLAUDE.md                  ← คำสั่ง Orchestrator (Claude)
+├── AGENTS.md                  ← คำสั่งชุดเดียวกัน (สำหรับ agent tool อื่นๆ)
 ├── .mcp.json                  ← project-scoped MCP config
 ├── sync-plugin.ps1            ← copy plugin → Studio install folder
 ├── server/
@@ -94,7 +94,6 @@ roblox-multi-ai/
 │   └── package.json
 ├── plugin/
 │   └── MultiAIPlugin.lua      ← Roblox Studio plugin (auto-connect)
-├── skill/                     ← Roblox knowledge skills (dev / game-design / problem-solver)
 └── .claude/
     └── agents/
         ├── roblox-designer.md

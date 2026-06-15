@@ -172,6 +172,7 @@ cd <REPO>
 ├── README.md                      ← overview
 ├── SETUP.md                       ← ไฟล์นี้
 ├── CLAUDE.md                      ← system prompt ให้ Claude Code
+├── AGENTS.md                      ← system prompt เดียวกัน (agent tool อื่นๆ)
 ├── .mcp.json                      ← MCP config (project scope)
 ├── sync-plugin.ps1                ← copy plugin → Studio install folder
 ├── server/
@@ -180,7 +181,6 @@ cd <REPO>
 │   └── os-tools.mjs               ← Win32/PowerShell helpers (screenshots, input) (~22 KB)
 ├── plugin/
 │   └── MultiAIPlugin.lua          ← Plugin Studio (auto-connect + status)
-├── skill/                         ← Roblox knowledge skills (dev / game-design / problem-solver)
 └── .claude/agents/                ← Claude Code subagents (designer/builder/scripter/ui/tester)
 ```
 
