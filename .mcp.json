@@ -2,7 +2,7 @@
   "mcpServers": {
     "roblox": {
       "command": "node",
-      "args": ["C:\\Users\\chaho\\roblox-multi-ai\\server\\server.mjs"]
+      "args": ["server/server.mjs"]
     }
   }
 }
