@@ -324,14 +324,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "screenshot_diff") {
     try {
       const target = args.target === "screen" ? "screen" : "studio";
+      const threshold = toInt(args.threshold, 10, { min: 0, max: 765 });
       const r = screenshotDiff({
         delay_seconds: toInt(args.delay_seconds, 1, { min: 0, max: 60 }),
-        threshold: toInt(args.threshold, 10, { min: 0, max: 765 }),
+        threshold,
         target,
       });
       return {
         content: [
-          { type: "text", text: `Diff (${target}): ${r.percent_changed}% of ${r.pixels_sampled} sampled pixels changed (threshold ${args.threshold ?? 10}, ${r.width}x${r.height}).` },
+          { type: "text", text: `Diff (${target}): ${r.percent_changed}% of ${r.pixels_sampled} sampled pixels changed (threshold ${threshold}, ${r.width}x${r.height}).` },
           { type: "image", data: r.before_b64, mimeType: "image/png" },
           { type: "image", data: r.after_b64,  mimeType: "image/png" },
         ],
@@ -776,17 +777,26 @@ function toolTimeoutMs(name, args) {
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? n : def;
   };
+  let budget;
   switch (name) {
     case "run_script_in_play_mode":
     case "npc_walk_path":
-      return secs(args.timeout, 30) * 1000 + SLACK_MS;
+      budget = secs(args.timeout, 30) * 1000 + SLACK_MS;
+      break;
     case "profile_play_mode":
-      return secs(args.duration, 10) * 1000 + SLACK_MS;
+      budget = secs(args.duration, 10) * 1000 + SLACK_MS;
+      break;
     case "humanoid_move":
-      return secs(args.duration, 1) * 1000 + SLACK_MS;
+      // The plugin may wait up to wait_for_character TWICE (player join, then
+      // character/Humanoid/HRP spawn) before driving for `duration`. Budget all three.
+      budget = (secs(args.duration, 1) + 2 * secs(args.wait_for_character, 10)) * 1000 + SLACK_MS;
+      break;
     default:
-      return DEFAULT_TIMEOUT_MS;
+      budget = DEFAULT_TIMEOUT_MS;
   }
+  // A per-tool budget may only EXTEND the default wall, never shorten it — so a
+  // new/under-counted case can't make a tool time out earlier than before.
+  return Math.max(DEFAULT_TIMEOUT_MS, budget);
 }
 
 const transport = new StdioServerTransport();
