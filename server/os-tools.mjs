@@ -367,6 +367,9 @@ export function captureStudioWindow({ format = "jpeg", maxWidth = 1280 } = {}) {
   const fmtEnum = format === "png" ? "Png" : "Jpeg";
   const tmpFile = join(tmpdir(), `mcp_studio_${randomUUID()}.${ext}`);
   const pathEscaped = tmpFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
+  // SECURITY: maxWidth is interpolated into the PowerShell script — it MUST be a
+  // plain integer or it becomes a command-injection sink. Never interpolate raw.
+  const mw = Number.isFinite(Number(maxWidth)) ? Math.max(0, Math.trunc(Number(maxWidth))) : 1280;
 
   const psScript = `
 $ErrorActionPreference = 'Stop'
@@ -421,7 +424,7 @@ $graphics.Dispose()
 if (-not $ok) { $bitmap.Dispose(); Write-Error "PrintWindow failed"; exit 1 }
 
 # Optional resize
-$maxW = ${maxWidth}
+$maxW = ${mw}
 if ($maxW -gt 0 -and $bitmap.Width -gt $maxW) {
     $ratio = $maxW / $bitmap.Width
     $newH = [int]($bitmap.Height * $ratio)
@@ -477,12 +480,15 @@ export function captureScreenshot({ format = "jpeg", maxWidth = 1280, region = n
   const fmtEnum = format === "png" ? "Png" : "Jpeg";
   const tmpFile = join(tmpdir(), `mcp_screenshot_${randomUUID()}.${ext}`);
   const pathEscaped = tmpFile.replace(/\\/g, "\\\\").replace(/'/g, "''");
+  // SECURITY: maxWidth is interpolated into the PowerShell script — coerce to a
+  // plain integer so it can never carry a command-injection payload.
+  const mw = Number.isFinite(Number(maxWidth)) ? Math.max(0, Math.trunc(Number(maxWidth))) : 1280;
   const resizeBlock =
-    maxWidth && maxWidth > 0
-      ? `if ($bitmap.Width -gt ${maxWidth}) {
-           $ratio = ${maxWidth} / $bitmap.Width;
+    mw > 0
+      ? `if ($bitmap.Width -gt ${mw}) {
+           $ratio = ${mw} / $bitmap.Width;
            $newH = [int]($bitmap.Height * $ratio);
-           $resized = New-Object System.Drawing.Bitmap $bitmap, ${maxWidth}, $newH;
+           $resized = New-Object System.Drawing.Bitmap $bitmap, ${mw}, $newH;
            $resized.Save('${pathEscaped}', [System.Drawing.Imaging.ImageFormat]::${fmtEnum});
            $resized.Dispose();
          } else {

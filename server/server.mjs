@@ -206,19 +206,40 @@ function coerceProps(obj) {
   return out;
 }
 
+// Force a value to a bounded integer. OS-level tools (screenshots / input)
+// interpolate numbers into PowerShell scripts, so any numeric arg that reaches
+// them MUST be a plain integer — never an attacker-typed string. Defense in
+// depth alongside the clamps inside os-tools.mjs.
+function toInt(v, def, { min = 0, max = 1_000_000 } = {}) {
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+}
+
+// Sanitize a screenshot region object into integer-only fields (or null).
+function sanitizeRegion(region) {
+  if (!region || typeof region !== "object") return null;
+  return {
+    x: toInt(region.x, 0, { min: -100_000 }),
+    y: toInt(region.y, 0, { min: -100_000 }),
+    width: toInt(region.width, 0, { min: 0 }),
+    height: toInt(region.height, 0, { min: 0 }),
+  };
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
 
   // ── OS-level tools handled directly (no plugin) ──
   if (name === "take_screenshot") {
     try {
+      const region = sanitizeRegion(args.region);
       const { base64, mimeType, sizeBytes } = captureScreenshot({
-        format: args.format ?? "jpeg",
-        maxWidth: args.max_width ?? 1280,
-        region: args.region ?? null,
+        format: args.format === "png" ? "png" : "jpeg",
+        maxWidth: toInt(args.max_width, 1280, { max: 16_384 }),
+        region,
       });
-      const tag = args.region
-        ? `region ${args.region.width}x${args.region.height}`
+      const tag = region
+        ? `region ${region.width}x${region.height}`
         : "full screen";
       return {
         content: [
@@ -237,8 +258,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "capture_studio_window") {
     try {
       const { base64, mimeType, sizeBytes, window } = captureStudioWindow({
-        format: args.format ?? "jpeg",
-        maxWidth: args.max_width ?? 1280,
+        format: args.format === "png" ? "png" : "jpeg",
+        maxWidth: toInt(args.max_width, 1280, { max: 16_384 }),
       });
       const dims = window?.width ? `${window.width}x${window.height} at (${window.left},${window.top})` : "?";
       return {
@@ -261,10 +282,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "screenshot_diff") {
     try {
-      const target = args.target ?? "studio";
+      const target = args.target === "screen" ? "screen" : "studio";
       const r = screenshotDiff({
-        delay_seconds: args.delay_seconds ?? 1,
-        threshold: args.threshold ?? 10,
+        delay_seconds: toInt(args.delay_seconds, 1, { min: 0, max: 60 }),
+        threshold: toInt(args.threshold, 10, { min: 0, max: 765 }),
         target,
       });
       return {
