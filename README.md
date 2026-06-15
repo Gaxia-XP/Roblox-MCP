@@ -1,10 +1,10 @@
 # Roblox Multi-AI
 
 ระบบ AI หลายตัวทำงานร่วมกันสร้างเกม Roblox ผ่าน Roblox Studio
-ใช้ Claude Code (หรือ Codex / Gemini CLI) เป็น Orchestrator และ MCP Server เป็นสะพานเชื่อมไปยัง Studio
+ใช้ Claude Code เป็น Orchestrator และ MCP Server เป็นสะพานเชื่อมไปยัง Studio
 
 ```
-You → Orchestrator (Claude/Codex/Gemini) → [Designer / Builder / Scripter / UI / Tester]
+You → Orchestrator (Claude Code) → [Designer / Builder / Scripter / UI / Tester]
                                                          ↓
                                               MCP Server (Node.js)
                                                          ↓ HTTP :8765
@@ -77,24 +77,24 @@ You → Orchestrator (Claude/Codex/Gemini) → [Designer / Builder / Scripter / 
 - **Smart type coercion** — `tween_property` / `set_property` อ่าน type ปัจจุบันแล้ว coerce goal ให้ตรงอัตโนมัติ (number/Vector3/Color3/UDim2/CFrame/EnumItem)
 - **Reliable movement testing** — `npc_walk_path` ใช้ PathfindingService + Humanoid:MoveTo แทนการกด keyboard → 100% reliable สำหรับ playtest
 
-### Multi-provider ready
-ตัวอย่าง config สำหรับ Codex (`.codex/`) และ Gemini CLI (`.gemini/`) อยู่ใน repo
-MCP server ตัวเดียวใช้ได้กับทุก provider
-
 ## โครงสร้างโปรเจกต์
 
 ```
 roblox-multi-ai/
 ├── README.md                  ← ไฟล์นี้
 ├── SETUP.md                   ← ติดตั้งทีละขั้น
-├── CLAUDE.md / AGENTS.md      ← คำสั่ง Orchestrator (Claude / อื่นๆ)
+├── HANDOFF.md                 ← สรุปสถานะโปรเจกต์
+├── CLAUDE.md                  ← คำสั่ง Orchestrator (Claude)
 ├── .mcp.json                  ← project-scoped MCP config
 ├── sync-plugin.ps1            ← copy plugin → Studio install folder
 ├── server/
 │   ├── server.mjs             ← MCP server + HTTP bridge
+│   ├── tools.mjs              ← นิยาม MCP tools
+│   ├── os-tools.mjs           ← OS-level input/screenshot helpers
 │   └── package.json
 ├── plugin/
 │   └── MultiAIPlugin.lua      ← Roblox Studio plugin (auto-connect)
+├── skill/                     ← Roblox knowledge skills (dev / game-design / problem-solver)
 └── .claude/
     └── agents/
         ├── roblox-designer.md

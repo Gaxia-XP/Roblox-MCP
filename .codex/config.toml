@@ -1,3 +1,0 @@
-[mcp_servers.roblox]
-args = ['C:\Users\chaho\roblox-multi-ai\server\server.mjs']
-command = "node"

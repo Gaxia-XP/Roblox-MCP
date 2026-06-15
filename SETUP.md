@@ -3,7 +3,7 @@
 ระบบนี้ทำอะไร: พิมพ์คำสั่ง (ไทย/อังกฤษ) → AI หลายตัวแบ่งงาน → ผลลัพธ์โผล่ใน Roblox Studio ทันที
 
 ```
-   คุณ → Orchestrator (Claude/Codex/Gemini) → ┌─ Designer (วางแผน)
+   คุณ → Orchestrator (Claude Code) → ┌─ Designer (วางแผน)
                                               ├─ Builder  (สร้างแผนที่ 3D)
                                               ├─ Scripter (เขียนโค้ด)
                                               ├─ UI       (ทำเมนู/HUD)
@@ -56,9 +56,6 @@ claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\s
 
 **ทาง B (project-scoped):**
 ไฟล์ `.mcp.json` เตรียมไว้ในโปรเจกต์แล้ว → แค่ `cd` เข้า project ก่อนรัน `claude`
-
-**สำหรับ Codex CLI:** ดู `.codex/config.toml`
-**สำหรับ Gemini CLI:** ดู `.gemini/settings.json`
 
 ---
 
@@ -158,7 +155,6 @@ C:\Users\chaho\roblox-multi-ai\
 ├── README.md                      ← overview
 ├── SETUP.md                       ← ไฟล์นี้
 ├── CLAUDE.md                      ← system prompt ให้ Claude Code
-├── AGENTS.md                      ← system prompt ให้ Codex/Gemini
 ├── .mcp.json                      ← MCP config (project scope)
 ├── sync-plugin.ps1                ← copy plugin → Studio install folder
 ├── server/
@@ -167,9 +163,8 @@ C:\Users\chaho\roblox-multi-ai\
 │   └── os-tools.mjs               ← Win32/PowerShell helpers (screenshots, input) (~22 KB)
 ├── plugin/
 │   └── MultiAIPlugin.lua          ← Plugin Studio (auto-connect + status)
-├── .claude/agents/                ← Claude Code subagents (designer/builder/scripter/ui/tester)
-├── .codex/                        ← Codex CLI config + agents
-└── .gemini/                       ← Gemini CLI config + agents
+├── skill/                         ← Roblox knowledge skills (dev / game-design / problem-solver)
+└── .claude/agents/                ← Claude Code subagents (designer/builder/scripter/ui/tester)
 ```
 
 แก้ไฟล์ `.claude/agents/*.md` ได้เลยถ้าอยากปรับ "นิสัย" / "ทักษะ" ของ AI แต่ละตัว

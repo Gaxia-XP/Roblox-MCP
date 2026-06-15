@@ -4,14 +4,14 @@
 
 ## 1. สรุปสั้น
 
-ระบบ AI หลายตัวสร้างเกม Roblox ผ่าน MCP server เป็นสะพานเชื่อม Claude Code (หรือ Codex/Gemini CLI) → Roblox Studio plugin → Studio API
+ระบบ AI หลายตัวสร้างเกม Roblox ผ่าน MCP server เป็นสะพานเชื่อม Claude Code → Roblox Studio plugin → Studio API
 
-**สถานะปัจจุบัน:** 76 MCP tools, multi-provider ready, plugin auto-connect, undo รองรับ, spatial intelligence ครบ, attribute + animation + batch/array ops + collision groups + welds + visual highlight
+**สถานะปัจจุบัน:** 76 MCP tools, plugin auto-connect, undo รองรับ, spatial intelligence ครบ, attribute + animation + batch/array ops + collision groups + welds + visual highlight
 
 ## 2. สถาปัตยกรรม
 
 ```
-User → Orchestrator (Claude/Codex/Gemini)
+User → Orchestrator (Claude Code)
         ├── invokes subagents (designer/builder/scripter/ui/tester)
         └── calls MCP tools
                 ↓ stdio (MCP protocol)
@@ -34,7 +34,6 @@ roblox-multi-ai/
 ├── README.md                      ← overview + feature list
 ├── SETUP.md                       ← install/run guide
 ├── CLAUDE.md                      ← system prompt + tool catalog (Claude)
-├── AGENTS.md                      ← same for Codex/Gemini
 ├── HANDOFF.md                     ← (this file)
 ├── .mcp.json                      ← MCP server registration (project-scope)
 ├── sync-plugin.ps1                ← sync plugin source → Studio install folder
@@ -46,13 +45,13 @@ roblox-multi-ai/
 │   └── node_modules/
 ├── plugin/
 │   └── MultiAIPlugin.lua          ← Studio plugin (auto-connect + polling + handlers)
-└── .claude/agents/                ← subagent definitions (Claude Code)
-    ├── roblox-designer.md         ← plan-only
-    ├── roblox-builder.md          ← 3D world (most tools)
-    ├── roblox-scripter.md         ← Luau scripts
-    ├── roblox-ui.md               ← GUIs
-    └── roblox-tester.md           ← QA — NO write tools, must use simulate_input/humanoid_move
-.codex/, .gemini/                  ← parallel configs (may lag behind .claude/)
+├── .claude/agents/                ← subagent definitions (Claude Code)
+│   ├── roblox-designer.md         ← plan-only
+│   ├── roblox-builder.md          ← 3D world (most tools)
+│   ├── roblox-scripter.md         ← Luau scripts
+│   ├── roblox-ui.md               ← GUIs
+│   └── roblox-tester.md           ← QA — NO write tools, must use simulate_input/humanoid_move
+└── skill/                         ← Roblox knowledge skills (dev / game-design / problem-solver)
 ```
 
 **สำคัญ:** `plugin/MultiAIPlugin.lua` คือ source-of-truth. Roblox Studio โหลดจาก `%LOCALAPPDATA%\Roblox\Plugins\MultiAIPlugin.lua`. ทุกครั้งที่แก้ source ต้องรัน `sync-plugin.ps1` แล้ว reload plugin ใน Studio.

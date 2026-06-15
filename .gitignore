@@ -21,3 +21,6 @@ desktop.ini
 # Roblox local
 *.rbxlx.lock
 *.rbxl.lock
+
+# Skill build artifacts (packaged .skill zips — regenerated from skill/*/ sources)
+*.skill
