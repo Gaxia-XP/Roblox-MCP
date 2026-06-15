@@ -14,6 +14,11 @@
 
 ---
 
+> **`<REPO>`** = โฟลเดอร์ที่คุณ clone repo นี้ไว้ (เช่น `G:\My Drive\Backup\Roblox-MCP-v6`)
+> แทนที่ `<REPO>` ในทุกคำสั่งด้วย path จริงของคุณ — โดยเฉพาะ `claude mcp add` (ขั้น 5 ทาง A) ที่ต้องใช้ path เต็ม
+
+---
+
 ## ติดตั้ง (ครั้งเดียว) — 5 ขั้น
 
 ### 1. ตรวจว่ามี Node.js
@@ -24,19 +29,19 @@ node --version
 
 ### 2. ติดตั้ง dependencies
 ```powershell
-cd C:\Users\chaho\roblox-multi-ai\server
+cd <REPO>\server
 npm install
 ```
 
 ### 3. ติดตั้ง Plugin ลง Roblox Studio
 ใช้สคริปต์ที่เตรียมไว้:
 ```powershell
-cd C:\Users\chaho\roblox-multi-ai
+cd <REPO>
 .\sync-plugin.ps1
 ```
 หรือคำสั่งสั้นๆ:
 ```powershell
-Copy-Item C:\Users\chaho\roblox-multi-ai\plugin\MultiAIPlugin.lua "$env:LOCALAPPDATA\Roblox\Plugins\" -Force
+Copy-Item <REPO>\plugin\MultiAIPlugin.lua "$env:LOCALAPPDATA\Roblox\Plugins\" -Force
 ```
 
 ### 4. เปิด HTTP ใน Roblox Studio
@@ -50,7 +55,7 @@ Copy-Item C:\Users\chaho\roblox-multi-ai\plugin\MultiAIPlugin.lua "$env:LOCALAPP
 
 **ทาง A (แนะนำ — global):**
 ```powershell
-claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\server.mjs"
+claude mcp add --scope user roblox node "<REPO>\server\server.mjs"
 ```
 ลงครั้งเดียว ใช้ได้ทุก project — เปิด Claude Code จากที่ไหนก็เจอ
 
@@ -86,7 +91,7 @@ Plugin **auto-connect เอง** เมื่อ Studio เปิด — ไม
 
 ### 2. เปิด Terminal เข้า Orchestrator
 ```powershell
-cd C:\Users\chaho\roblox-multi-ai
+cd <REPO>
 claude
 ```
 
@@ -153,7 +158,7 @@ Orchestrator จะ:
 
 ### Sync plugin หลังแก้
 ```powershell
-cd C:\Users\chaho\roblox-multi-ai
+cd <REPO>
 .\sync-plugin.ps1
 ```
 แล้ว reload plugin ใน Studio
@@ -163,7 +168,7 @@ cd C:\Users\chaho\roblox-multi-ai
 ## โครงสร้างไฟล์
 
 ```
-C:\Users\chaho\roblox-multi-ai\
+<REPO>\
 ├── README.md                      ← overview
 ├── SETUP.md                       ← ไฟล์นี้
 ├── CLAUDE.md                      ← system prompt ให้ Claude Code

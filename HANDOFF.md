@@ -83,7 +83,7 @@ roblox-multi-ai/
 
 ```powershell
 # Clone/checkout repo
-cd C:\Users\chaho\roblox-multi-ai
+cd <REPO>
 
 # Install Node deps (one-time)
 cd server && npm install && cd ..
@@ -95,7 +95,7 @@ cd server && npm install && cd ..
 # File → Studio Settings → Security → Allow HTTP Requests = ON
 
 # Register MCP server with Claude Code (one-time, global)
-claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\server.mjs"
+claude mcp add --scope user roblox node "<REPO>\server\server.mjs"
 
 # Use:
 # 1. Open Roblox Studio (plugin auto-connects)

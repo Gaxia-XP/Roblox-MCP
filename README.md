@@ -111,7 +111,7 @@ roblox-multi-ai/
 หลังติดตั้งเสร็จ เปิด Studio (plugin auto-connect), เปิด terminal:
 
 ```powershell
-cd C:\Users\chaho\roblox-multi-ai
+cd <REPO>
 claude
 ```
 
