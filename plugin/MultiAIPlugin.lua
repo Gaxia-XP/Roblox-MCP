@@ -18,6 +18,20 @@ local SERVER_URL = "http://127.0.0.1:8765"
 local POLL_INTERVAL = 0.5
 local MCP_STOP_SIGNAL_KEY = "MultiAI_StopPlaySignal"
 
+-- Optional shared secret. Leave "" for the default (no auth). To require auth,
+-- set this to the same value as the server's ROBLOX_MCP_TOKEN env var, then
+-- re-sync the plugin (sync-plugin.ps1). When set, it is sent as the
+-- `x-mcp-token` header on every /poll and /result request.
+local AUTH_TOKEN = ""
+
+-- Header table for authenticated requests (nil when no token is configured).
+local function authHeaders(): { [string]: string }?
+    if AUTH_TOKEN ~= "" then
+        return { ["x-mcp-token"] = AUTH_TOKEN }
+    end
+    return nil
+end
+
 -- ---------------------------------------------------------------------------
 -- Play-mode server context: monitor for stop signals sent from edit mode.
 -- When ExecutePlayModeAsync is running, only plugin code in the Server context
@@ -2954,7 +2968,7 @@ local function loop()
     print(`[MultiAI] Polling started — {SERVER_URL}`)
     while running do
         local ok, response = pcall(function()
-            return HttpService:GetAsync(SERVER_URL .. "/poll", true)
+            return HttpService:GetAsync(SERVER_URL .. "/poll", true, authHeaders())
         end)
         if ok then
             -- Server responded → connection healthy
@@ -2973,7 +2987,9 @@ local function loop()
                         HttpService:PostAsync(
                             SERVER_URL .. "/result/" .. decoded.id,
                             HttpService:JSONEncode(result),
-                            Enum.HttpContentType.ApplicationJson
+                            Enum.HttpContentType.ApplicationJson,
+                            false,
+                            authHeaders()
                         )
                     end)
                     if not postOk then warn(`[MultiAI] post failed: {tostring(postErr)}`) end

@@ -59,6 +59,18 @@ claude mcp add --scope user roblox node "C:\Users\chaho\roblox-multi-ai\server\s
 
 ---
 
+## 🔒 ความปลอดภัย (อ่านสักครั้ง)
+
+Server เปิดพอร์ต `127.0.0.1:8765` และ plugin จะ **รันคำสั่งที่ได้รับ** (รวมถึง Luau ใดๆ ผ่าน `run_luau`) นั่นแปลว่าใครก็ตามที่ยิง HTTP มาที่พอร์ตนี้ได้ = สั่งงาน Studio ได้
+
+- **Host check (เปิดอัตโนมัติ):** server รับเฉพาะ request ที่ Host เป็น `127.0.0.1:8765`/`localhost:8765` — กันการโจมตีแบบ DNS-rebinding จากแท็บเบราว์เซอร์
+- **Shared-secret token (ออปชัน แนะนำถ้าเครื่องมีหลาย process/หลายผู้ใช้):**
+  1. server: ตั้ง env `ROBLOX_MCP_TOKEN` (เช่นใน `.mcp.json` ใส่ `"env": { "ROBLOX_MCP_TOKEN": "ค่าสุ่มยาวๆ" }`)
+  2. plugin: เปิด `plugin/MultiAIPlugin.lua` ตั้ง `local AUTH_TOKEN = "ค่าเดียวกัน"` แล้วรัน `sync-plugin.ps1` + reload plugin
+  - ตั้งทั้งสองฝั่งให้ตรงกัน ถ้าตั้งฝั่งเดียว plugin จะต่อไม่ติด (401). เว้นว่างทั้งคู่ = ไม่ใช้ token (ค่าเริ่มต้น)
+
+---
+
 ## ใช้งานทุกครั้ง — 2 ขั้น
 
 ### 1. เปิด Roblox Studio

@@ -69,8 +69,37 @@ function submit(type, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // HTTP server (Roblox plugin talks to this)
 // ---------------------------------------------------------------------------
 
+// Only accept requests addressed to the loopback host. The plugin always talks
+// to 127.0.0.1:8765; a browser DNS-rebinding attack arrives with a different
+// Host header, so this check defeats it (the 127.0.0.1 bind only blocks remote
+// network peers, not a malicious local page).
+const ALLOWED_HOSTS = new Set(["127.0.0.1:8765", "localhost:8765"]);
+
+// Optional shared secret. If ROBLOX_MCP_TOKEN is set on the server AND the
+// plugin's AUTH_TOKEN matches, the control endpoints require it. Unset on
+// either side ⇒ no token required (backward compatible).
+const AUTH_TOKEN = (process.env.ROBLOX_MCP_TOKEN || "").trim();
+
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
+
+  // Reject cross-origin / rebound hosts before doing anything else.
+  if (!ALLOWED_HOSTS.has(req.headers.host || "")) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end('{"error":"forbidden host"}');
+    return;
+  }
+
+  // Require the shared secret on the command-carrying endpoints when enabled.
+  if (AUTH_TOKEN) {
+    const p = url.pathname;
+    const guarded = p === "/poll" || p === "/submit" || p.startsWith("/result/");
+    if (guarded && req.headers["x-mcp-token"] !== AUTH_TOKEN) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end('{"error":"unauthorized"}');
+      return;
+    }
+  }
 
   // GET /poll  — long-poll up to 10s for the next command
   if (req.method === "GET" && url.pathname === "/poll") {
@@ -168,7 +197,14 @@ const httpServer = http.createServer((req, res) => {
   res.end();
 });
 
-httpServer.listen(8765, "127.0.0.1");
+httpServer.listen(8765, "127.0.0.1", () => {
+  // stderr only — stdout is reserved for the MCP stdio transport.
+  console.error(
+    AUTH_TOKEN
+      ? "[roblox-mcp] bridge on 127.0.0.1:8765 — Host-checked, shared-secret auth ENABLED."
+      : "[roblox-mcp] bridge on 127.0.0.1:8765 — Host-checked. No ROBLOX_MCP_TOKEN set: any local process can drive the plugin. Set ROBLOX_MCP_TOKEN (server env) + AUTH_TOKEN (plugin) to require auth."
+  );
+});
 
 // ---------------------------------------------------------------------------
 // MCP tools
