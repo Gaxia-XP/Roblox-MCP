@@ -141,6 +141,7 @@ Orchestrator จะ:
 | ไม่เห็นกลุ่ม Multi-AI ใน Studio | ไฟล์ `.lua` ไม่ได้อยู่ใน plugins folder → รัน sync-plugin.ps1 |
 | Plugin แสดง icon ไม่ได้ (Output มี warning) | ไม่กระทบการทำงาน — แค่ไอคอน |
 | ภาพ screenshot จับ taskbar/แอปอื่นปน | ใช้ `capture_studio_window` แทน `take_screenshot` — มันจับเฉพาะ Studio |
+| Server log `FATAL: ...already in use` | มี server.mjs อีกตัวยึดพอร์ต 8765 อยู่ — ปิดตัวเก่า หรือรันตัวใหม่ด้วย env `ROBLOX_MCP_PORT=<พอร์ตอื่น>` (ถ้าเปลี่ยนพอร์ต ต้องชี้ plugin ไปพอร์ตเดียวกันด้วย ไม่งั้นต่อไม่ติด) |
 
 ---
 

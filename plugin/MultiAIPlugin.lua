@@ -91,7 +91,8 @@ local VECTOR3_PROPS = {
     Position = true, Size = true, Orientation = true, Rotation = true,
     Velocity = true, RotVelocity = true,
 }
-local COLOR3_PROPS = { Color = true, BrickColor = true }
+local COLOR3_PROPS = { Color = true }
+local BRICKCOLOR_PROPS = { BrickColor = true }
 
 local function coerceValue(propName: string, value: any): any
     if typeof(value) == "table" then
@@ -101,6 +102,15 @@ local function coerceValue(propName: string, value: any): any
         if COLOR3_PROPS[propName] and #value == 3 then
             return Color3.new(value[1], value[2], value[3])
         end
+        -- The BrickColor property needs a BrickColor value, NOT a Color3 —
+        -- assigning a Color3 to it errors. Build the nearest BrickColor.
+        if BRICKCOLOR_PROPS[propName] and #value == 3 then
+            return BrickColor.new(Color3.new(value[1], value[2], value[3]))
+        end
+    end
+    if BRICKCOLOR_PROPS[propName] and typeof(value) == "string" then
+        local ok, bc = pcall(function() return BrickColor.new(value) end)
+        if ok then return bc end
     end
     if propName == "Material" and typeof(value) == "string" then
         local ok, mat = pcall(function() return Enum.Material[value] end)

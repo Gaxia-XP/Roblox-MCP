@@ -69,16 +69,73 @@ function submit(type, payload, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // HTTP server (Roblox plugin talks to this)
 // ---------------------------------------------------------------------------
 
+// Listen port. Defaults to 8765 (the plugin's hard-coded target); override via
+// ROBLOX_MCP_PORT only when running an isolated/second instance — the plugin
+// must be pointed at the same port for the bridge to work.
+const HTTP_PORT = (() => {
+  const p = Number(process.env.ROBLOX_MCP_PORT);
+  return Number.isInteger(p) && p > 0 && p < 65536 ? p : 8765;
+})();
+
 // Only accept requests addressed to the loopback host. The plugin always talks
-// to 127.0.0.1:8765; a browser DNS-rebinding attack arrives with a different
+// to 127.0.0.1:<port>; a browser DNS-rebinding attack arrives with a different
 // Host header, so this check defeats it (the 127.0.0.1 bind only blocks remote
 // network peers, not a malicious local page).
-const ALLOWED_HOSTS = new Set(["127.0.0.1:8765", "localhost:8765"]);
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${HTTP_PORT}`, `localhost:${HTTP_PORT}`]);
 
 // Optional shared secret. If ROBLOX_MCP_TOKEN is set on the server AND the
 // plugin's AUTH_TOKEN matches, the control endpoints require it. Unset on
 // either side ⇒ no token required (backward compatible).
 const AUTH_TOKEN = (process.env.ROBLOX_MCP_TOKEN || "").trim();
+
+// Request-body limits. /result and /submit accumulate the body in memory, so an
+// unbounded stream from any local process would exhaust memory. A Luau script or
+// a tool result is at most tens of KB — 8 MB is generous headroom. The timeout
+// is a slow-loris guard: a client must finish sending within the window or the
+// socket is dropped (otherwise it ties up memory and, for /submit, a queue slot).
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const BODY_TIMEOUT_MS = 30_000;
+
+// Read a request body with a hard size cap and a total timeout. On violation it
+// responds with an error and `onComplete` is NEVER called; on success it fires
+// `onComplete(body)` exactly once.
+function readBody(req, res, onComplete) {
+  let body = "";
+  let bytes = 0;
+  let done = false;
+  const finish = (fn) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    fn();
+  };
+  const timer = setTimeout(() => {
+    finish(() => {
+      try {
+        res.writeHead(408, { "Content-Type": "application/json" });
+        res.end('{"error":"request timeout"}');
+      } catch { /* socket already gone */ }
+      req.destroy();
+    });
+  }, BODY_TIMEOUT_MS);
+  req.on("data", (c) => {
+    if (done) return;
+    bytes += c.length;
+    if (bytes > MAX_BODY_BYTES) {
+      finish(() => {
+        try {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end('{"error":"payload too large"}');
+        } catch { /* socket already gone */ }
+        req.destroy();
+      });
+      return;
+    }
+    body += c;
+  });
+  req.on("end", () => finish(() => onComplete(body)));
+  req.on("error", () => finish(() => { try { req.destroy(); } catch { /* noop */ } }));
+}
 
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -133,9 +190,7 @@ const httpServer = http.createServer((req, res) => {
   // POST /result/<id>  — plugin returns a result for a command
   if (req.method === "POST" && url.pathname.startsWith("/result/")) {
     const id = url.pathname.slice("/result/".length);
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => {
+    readBody(req, res, (body) => {
       const handler = inFlight.get(id);
       if (handler) {
         clearTimeout(handler.timeout);
@@ -154,17 +209,16 @@ const httpServer = http.createServer((req, res) => {
 
   // POST /submit  — manual submission for agents without tool access
   if (req.method === "POST" && url.pathname === "/submit") {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
+    readBody(req, res, async (body) => {
       try {
         const { type, payload } = JSON.parse(body);
         const result = await submit(type, payload);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
-      } catch (err) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: err.message }));
+      } catch {
+        // Generic message — don't echo parser internals back to the caller.
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end('{"error":"bad request"}');
       }
     });
     return;
@@ -197,12 +251,32 @@ const httpServer = http.createServer((req, res) => {
   res.end();
 });
 
-httpServer.listen(8765, "127.0.0.1", () => {
+// A malformed HTTP request (garbage bytes, bad framing) from any local client
+// must not take the process down — answer 400 on the raw socket and move on.
+httpServer.on("clientError", (err, socket) => {
+  if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+});
+
+// Without this, a bind failure (most commonly the port already being held by a
+// second server.mjs) throws an uncaught exception and the process dies with an
+// opaque stack. Surface the cause and exit cleanly instead.
+httpServer.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `[roblox-mcp] FATAL: 127.0.0.1:${HTTP_PORT} is already in use — another server.mjs (or app) is bound to it. Close it and retry.`
+    );
+  } else {
+    console.error(`[roblox-mcp] FATAL: HTTP server error: ${err.message}`);
+  }
+  process.exit(1);
+});
+
+httpServer.listen(HTTP_PORT, "127.0.0.1", () => {
   // stderr only — stdout is reserved for the MCP stdio transport.
   console.error(
     AUTH_TOKEN
-      ? "[roblox-mcp] bridge on 127.0.0.1:8765 — Host-checked, shared-secret auth ENABLED."
-      : "[roblox-mcp] bridge on 127.0.0.1:8765 — Host-checked. No ROBLOX_MCP_TOKEN set: any local process can drive the plugin. Set ROBLOX_MCP_TOKEN (server env) + AUTH_TOKEN (plugin) to require auth."
+      ? `[roblox-mcp] bridge on 127.0.0.1:${HTTP_PORT} — Host-checked, shared-secret auth ENABLED.`
+      : `[roblox-mcp] bridge on 127.0.0.1:${HTTP_PORT} — Host-checked. No ROBLOX_MCP_TOKEN set: any local process can drive the plugin. Set ROBLOX_MCP_TOKEN (server env) + AUTH_TOKEN (plugin) to require auth.`
   );
 });
 
