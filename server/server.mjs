@@ -200,6 +200,12 @@ const httpServer = http.createServer((req, res) => {
         } catch {
           handler.resolve({ error: "invalid JSON from plugin" });
         }
+      } else {
+        // No in-flight entry: the caller already timed out (or this id was never
+        // tracked). The result is dropped, but the plugin likely *did* execute
+        // the command — log it so a mismatch between "caller saw timeout" and
+        // "mutation actually happened" is observable instead of silent.
+        console.error(`late result for ${id}, op may have completed plugin-side`);
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end('{"ok":true}');
