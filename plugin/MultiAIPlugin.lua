@@ -1883,6 +1883,9 @@ end
 
 local cameraSnapshots: { [string]: CFrame } = {}
 
+-- Module-level EditableMesh batch sessions (Task 7).
+local emSessions: { [string]: { em: any, vertMap: { [number]: number } } } = {}
+
 handlers.snapshot_camera = function(payload)
     local cam = workspace.CurrentCamera
     if not cam then return { error = "no CurrentCamera" } end
@@ -2781,6 +2784,69 @@ handlers.get_tagged = function(payload)
         end
     end
     return { tag = tag, count = #results, results = results }
+end
+
+-- ---------------------------------------------------------------------------
+-- editable_mesh_build: assemble an AssetService EditableMesh across batches,
+-- then CreateMeshPartAsync it into the workspace. No-cloud path for import_blender_model.
+-- ---------------------------------------------------------------------------
+
+handlers.editable_mesh_build = function(payload)
+	local AssetService = game:GetService("AssetService")
+	local sessionId = tostring(payload.sessionId)
+	local session = emSessions[sessionId]
+	if not session then
+		local ok, em = pcall(function() return AssetService:CreateEditableMesh() end)
+		if not ok then return { error = "CreateEditableMesh failed: " .. tostring(em) } end
+		session = { em = em, vertMap = {} }
+		emSessions[sessionId] = session
+	end
+	local em = session.em
+
+	-- Append this batch's vertices, remembering glb-index -> EditableMesh vertex id.
+	-- Wrapped so a bad-data error clears the orphaned session instead of leaking it.
+	local okAppend, appendErr = pcall(function()
+		for i, v in ipairs(payload.vertices or {}) do
+			local globalIndex = (payload.vertexBase or 0) + (i - 1)
+			session.vertMap[globalIndex] = em:AddVertex(Vector3.new(v[1], v[2], v[3]))
+		end
+		for _, t in ipairs(payload.triangles or {}) do
+			local a, b, c = session.vertMap[t[1]], session.vertMap[t[2]], session.vertMap[t[3]]
+			if a and b and c then em:AddTriangle(a, b, c) end
+		end
+	end)
+	if not okAppend then
+		emSessions[sessionId] = nil  -- drop the orphaned EditableMesh so it can be GC'd
+		return { error = "editable_mesh append failed: " .. tostring(appendErr) }
+	end
+
+	if not payload.finalize then
+		return { ok = true, sessionId = sessionId, received = #(payload.vertices or {}) }
+	end
+
+	-- Finalize. Drop the session first so any early-return can't leak it.
+	local parent = resolvePath(payload.parent or "Workspace")
+	if not parent then emSessions[sessionId] = nil; return { error = "parent not found" } end
+
+	-- CreateMeshPartAsync YIELDS and Content.fromObject is a Luau global that older
+	-- Studio builds may lack. Build the MeshPart OUTSIDE the recording (matches
+	-- insert_model's yield-outside-recording rule) and guard the call so an
+	-- unsupported Studio returns a clear error instead of a hard crash.
+	local okBuild, meshPartOrErr = pcall(function()
+		return AssetService:CreateMeshPartAsync(Content.fromObject(em))
+	end)
+	emSessions[sessionId] = nil
+	if not okBuild or typeof(meshPartOrErr) ~= "Instance" then
+		return { error = "CreateMeshPartAsync/Content.fromObject failed (needs a Studio with EditableMesh + Content support): " .. tostring(meshPartOrErr) }
+	end
+	local meshPart = meshPartOrErr
+
+	-- Only the synchronous naming + parenting goes inside the undo recording.
+	return withRecording("MCP editable_mesh_build", function()
+		meshPart.Name = payload.name or "BlenderMesh"
+		meshPart.Parent = parent
+		return { ok = true, meshPartPath = meshPart:GetFullName(), sessionId = sessionId }
+	end)
 end
 
 -- ---------------------------------------------------------------------------

@@ -20,7 +20,10 @@ import { createBridge, redactHeaders } from "./lib/http-bridge.mjs";
 import { uploadAsset, pollOperation } from "./lib/open-cloud.mjs";
 import { tmpdir } from "node:os";
 import { readFileSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { parseGlb } from "./lib/glb.mjs";
 
 // ---------------------------------------------------------------------------
 // HTTP bridge (Roblox plugin talks to this)
@@ -100,9 +103,46 @@ function sanitizeRegion(region) {
   };
 }
 
-// EditableMesh fallback for import_blender_model (Task 7 replaces this stub).
-// Top-level so it has no access to the handler-local jsonResult.
-async function importViaEditableMesh(args) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "EditableMesh fallback not yet implemented" }, null, 2) }] }; }
+const EM_VERT_BATCH = 4000; // triangles ride the final vertex batch (see note); no separate tri batching in v1.
+// importViaEditableMesh is a TOP-LEVEL function (not inside the CallTool handler),
+// so it has no access to the local `jsonResult` — it builds the content shape itself.
+const emResult = (v) => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
+
+async function importViaEditableMesh(args) {
+  let mesh;
+  try {
+    mesh = parseGlb(await readFile(args.local_path));
+  } catch (e) {
+    return emResult({ ok: false, via: "editable_mesh", error: `glb parse failed: ${e.message}` });
+  }
+  // Guard: a valid glb whose first primitive has no geometry would otherwise send
+  // zero batches and report a false success (no MeshPart created). No silent truncation.
+  if (mesh.vertices.length === 0 || mesh.triangles.length === 0) {
+    return emResult({ ok: false, via: "editable_mesh", error: "parsed mesh has no geometry (0 verts/tris)" });
+  }
+  if (mesh.triangles.length > 20000 || mesh.vertices.length > 60000) {
+    return emResult({ ok: false, via: "editable_mesh", error: "exceeds EditableMesh limits (20k tris / 60k verts) — decimate in Blender" });
+  }
+  const sessionId = randomUUID();
+  // Stream vertices in batches; triangles ride along with the LAST batch so all
+  // vertex ids exist before any triangle references them.
+  let last;
+  for (let v = 0; v < mesh.vertices.length; v += EM_VERT_BATCH) {
+    const isLastVertBatch = v + EM_VERT_BATCH >= mesh.vertices.length;
+    last = await submit("editable_mesh_build", {
+      sessionId,
+      name: args.name || "BlenderMesh",
+      parent: args.parent_path || "Workspace",
+      vertexBase: v,
+      vertices: mesh.vertices.slice(v, v + EM_VERT_BATCH),
+      triangles: isLastVertBatch ? mesh.triangles : [],
+      finalize: isLastVertBatch,
+    }, 120_000);
+    if (last && last.error) return emResult({ ok: false, via: "editable_mesh", ...last });
+  }
+  if (!last) return emResult({ ok: false, via: "editable_mesh", error: "no batches sent (empty mesh)" });
+  return emResult({ ok: true, via: "editable_mesh", ...last });
+}
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
