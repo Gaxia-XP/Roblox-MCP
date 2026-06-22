@@ -1135,4 +1135,18 @@ export const TOOLS = [
       required: ["actions"],
     },
   },
+  {
+    name: "roblox_upload_asset",
+    description: "Upload a local mesh file (.glb/.fbx) to Roblox via Open Cloud and return its assetId. Requires ROBLOX_OPEN_CLOUD_API_KEY + ROBLOX_OPEN_CLOUD_CREATOR_ID env.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        local_path: { type: "string" },
+        asset_type: { type: "string", default: "Model" },
+        name: { type: "string" },
+        description: { type: "string", default: "" },
+      },
+      required: ["local_path", "name"],
+    },
+  },
 ];

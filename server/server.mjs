@@ -17,6 +17,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawnSync } from "node:child_process";
 import { createBridge, redactHeaders } from "./lib/http-bridge.mjs";
+import { uploadAsset, pollOperation } from "./lib/open-cloud.mjs";
 import { tmpdir } from "node:os";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -101,6 +102,7 @@ function sanitizeRegion(region) {
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
+  const jsonResult = (v) => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
 
   // ── OS-level tools handled directly (no plugin) ──
   if (name === "take_screenshot") {
@@ -190,6 +192,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "get_connection_status") {
     const status = getStatus();
     return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+  }
+
+  if (name === "roblox_upload_asset") {
+    const apiKey = process.env.ROBLOX_OPEN_CLOUD_API_KEY;
+    const creatorId = process.env.ROBLOX_OPEN_CLOUD_CREATOR_ID;
+    const creatorType = process.env.ROBLOX_OPEN_CLOUD_CREATOR_TYPE || "User";
+    if (!apiKey || !creatorId) {
+      return jsonResult({ ok: false, error: "ROBLOX_OPEN_CLOUD_API_KEY and ROBLOX_OPEN_CLOUD_CREATOR_ID must be set" });
+    }
+    try {
+      const { operationId } = await uploadAsset({ apiKey, creatorId, creatorType, filePath: args.local_path, displayName: args.name, description: args.description });
+      const { assetId } = await pollOperation({ apiKey, operationId });
+      return jsonResult({ ok: true, assetId, kind: args.asset_type || "Model" });
+    } catch (e) {
+      return jsonResult({ ok: false, error: String(e.message || e) });
+    }
   }
 
   // ── Plugin-routed tools ──
