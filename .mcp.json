@@ -3,6 +3,10 @@
     "roblox": {
       "command": "node",
       "args": ["server/server.mjs"]
+    },
+    "blender": {
+      "command": "node",
+      "args": ["blender/server.mjs"]
     }
   }
 }
