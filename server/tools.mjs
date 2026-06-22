@@ -1149,4 +1149,14 @@ export const TOOLS = [
       required: ["local_path", "name"],
     },
   },
+  {
+    name: "roblox_insert_uploaded_model",
+    description: "Insert an already-uploaded asset into Studio by assetId (InsertService:LoadAsset + reparent, with moderation retry).",
+    inputSchema: { type: "object", properties: { assetId: { type: "number" }, parent_path: { type: "string", default: "Workspace" }, name: { type: "string" } }, required: ["assetId"] },
+  },
+  {
+    name: "import_blender_model",
+    description: "End-to-end: upload a local .glb via Open Cloud then insert into Studio. Falls back to EditableMesh (no cloud) when ROBLOX_OPEN_CLOUD_API_KEY is unset.",
+    inputSchema: { type: "object", properties: { local_path: { type: "string" }, parent_path: { type: "string", default: "Workspace" }, name: { type: "string" } }, required: ["local_path"] },
+  },
 ];

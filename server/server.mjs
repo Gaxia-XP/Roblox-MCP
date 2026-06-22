@@ -100,6 +100,10 @@ function sanitizeRegion(region) {
   };
 }
 
+// EditableMesh fallback for import_blender_model (Task 7 replaces this stub).
+// Top-level so it has no access to the handler-local jsonResult.
+async function importViaEditableMesh(args) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "EditableMesh fallback not yet implemented" }, null, 2) }] }; }
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
   const jsonResult = (v) => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
@@ -208,6 +212,31 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     } catch (e) {
       return jsonResult({ ok: false, error: String(e.message || e) });
     }
+  }
+
+  if (name === "roblox_insert_uploaded_model") {
+    // NOTE: command type is "insert_uploaded_model" (plugin handler), NOT the tool name.
+    const result = await submit("insert_uploaded_model", {
+      assetId: args.assetId, parent: args.parent_path || "Workspace", name: args.name,
+    });
+    return jsonResult(result);
+  }
+
+  if (name === "import_blender_model") {
+    const apiKey = process.env.ROBLOX_OPEN_CLOUD_API_KEY;
+    const creatorId = process.env.ROBLOX_OPEN_CLOUD_CREATOR_ID;
+    const creatorType = process.env.ROBLOX_OPEN_CLOUD_CREATOR_TYPE || "User";
+    if (apiKey && creatorId) {
+      try {
+        const { operationId } = await uploadAsset({ apiKey, creatorId, creatorType, filePath: args.local_path, displayName: args.name || "BlenderModel" });
+        const { assetId } = await pollOperation({ apiKey, operationId });
+        const result = await submit("insert_uploaded_model", { assetId: Number(assetId), parent: args.parent_path || "Workspace", name: args.name });
+        return jsonResult({ ok: true, via: "open_cloud", assetId, ...result });
+      } catch (e) {
+        return jsonResult({ ok: false, via: "open_cloud", error: String(e.message || e) });
+      }
+    }
+    return await importViaEditableMesh(args); // EditableMesh fallback (Task 7) — builds its own content shape
   }
 
   // ── Plugin-routed tools ──

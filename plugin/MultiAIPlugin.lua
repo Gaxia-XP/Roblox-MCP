@@ -962,6 +962,39 @@ handlers.insert_model = function(payload)
     end)
 end
 
+handlers.insert_uploaded_model = function(payload)
+	local InsertService = game:GetService("InsertService")
+	local parent = resolvePath(payload.parent or "Workspace")
+	if not parent then return { error = "parent not found: " .. tostring(payload.parent) } end
+	local assetId = tonumber(payload.assetId)
+	if not assetId then return { error = "assetId must be numeric: " .. tostring(payload.assetId) } end
+
+	-- Freshly-uploaded assets can be briefly unavailable (moderation/propagation).
+	-- Retry LoadAsset a few times before giving up. LoadAsset is a network call,
+	-- so it runs OUTSIDE the recording (undo only reverses the parenting).
+	local model
+	for attempt = 1, 5 do
+		local ok, res = pcall(function() return InsertService:LoadAsset(assetId) end)
+		if ok and res then model = res; break end
+		task.wait(1.5)
+	end
+	if not model then
+		return { error = "LoadAsset failed after retries (asset may still be moderating or is private): " .. tostring(assetId) }
+	end
+
+	return withRecording("MCP insert_uploaded_model", function()
+		local inserted = {}
+		for _, child in ipairs(model:GetChildren()) do
+			if payload.name and child:IsA("BasePart") then child.Name = payload.name end
+			child.Parent = parent
+			table.insert(inserted, { path = child:GetFullName(), className = child.ClassName, name = child.Name })
+		end
+		local modelPath = model:GetFullName()
+		model:Destroy()
+		return { ok = true, inserted = inserted, count = #inserted, modelPath = modelPath }
+	end)
+end
+
 handlers.get_studio_mode = function(payload)
     local RunService = game:GetService("RunService")
     return {
