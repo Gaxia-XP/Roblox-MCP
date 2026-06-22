@@ -14,6 +14,11 @@ function readAccessor(accessors, views, bin, idx) {
   const view = views[acc.bufferView];
   const comps = COMPS[acc.type];
   const base = (view.byteOffset || 0) + (acc.byteOffset || 0);
+  const BYTES = { 5126: 4, 5123: 2, 5125: 4, 5121: 1 };
+  const stride = comps * (BYTES[acc.componentType] || 0);
+  if (view.byteStride && view.byteStride !== stride) {
+    throw new Error("interleaved bufferView (byteStride) not supported — re-export non-interleaved");
+  }
   const out = [];
   if (acc.componentType === FLOAT) {
     for (let i = 0; i < acc.count; i++) {

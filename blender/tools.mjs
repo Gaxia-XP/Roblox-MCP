@@ -11,7 +11,7 @@ const xyz = { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3
 export const BLENDER_TOOLS = [
   {
     name: "blender_create_primitive",
-    description: "Create a bmesh primitive. kind: cube|sphere|cylinder|cone|plane|torus. location/rotation/scale are [x,y,z].",
+    description: "Create a bmesh primitive. kind: cube|sphere|cylinder|cone|plane. location/rotation/scale are [x,y,z].",
     inputSchema: {
       type: "object",
       properties: {

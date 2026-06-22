@@ -271,7 +271,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { operationId } = await uploadAsset({ apiKey, creatorId, creatorType, filePath: args.local_path, displayName: args.name || "BlenderModel" });
         const { assetId } = await pollOperation({ apiKey, operationId });
         const result = await submit("insert_uploaded_model", { assetId: Number(assetId), parent: args.parent_path || "Workspace", name: args.name });
-        return jsonResult({ ok: true, via: "open_cloud", assetId, ...result });
+        return jsonResult({ ...result, ok: true, via: "open_cloud", assetId });
       } catch (e) {
         return jsonResult({ ok: false, via: "open_cloud", error: String(e.message || e) });
       }

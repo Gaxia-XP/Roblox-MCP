@@ -153,7 +153,7 @@ The following env vars are read at server startup and must be set in the shell t
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `BLENDER_MCP_PORT` | `blender/server.mjs` | Port the Blender add-on polls (default `3001`) |
+| `BLENDER_MCP_PORT` | `blender/server.mjs` | Port the Blender add-on polls (default `8766`) |
 | `BLENDER_MCP_TOKEN` | `blender/server.mjs` | Shared secret for add-on auth |
 | `BLENDER_WORKSPACE_DIR` | `blender/server.mjs` | Root dir for exports (default `%LOCALAPPDATA%/Roblox-MCP/blender`) |
 | `ROBLOX_OPEN_CLOUD_API_KEY` | `server/server.mjs` | Open Cloud API key for asset upload |

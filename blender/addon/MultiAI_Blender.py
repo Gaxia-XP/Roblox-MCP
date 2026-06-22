@@ -294,7 +294,7 @@ HANDLERS = {
 }
 
 # ── Main-thread drain (timer) ─────────────────────────────────────────────────
-READ_ONLY = {"blender_get_tree", "blender_get_bounds", "blender_screenshot", "blender_get_connection_status"}
+READ_ONLY = {"blender_get_tree", "blender_get_bounds", "blender_screenshot"}
 
 def _drain():
     try:
