@@ -11,12 +11,19 @@ if (-not (Test-Path $src)) {
 }
 
 # Resolve the outer token to bake into the plugin's AUTH_TOKEN.
-# Precedence: explicit ROBLOX_MCP_TOKEN env > machine-token file > "" (zero-config first run).
+# Mirrors the broker's OUTER_TOKEN precedence (server.mjs / loadOrMintMachineToken):
+#   explicit ROBLOX_MCP_TOKEN env > (ROBLOX_MCP_ALLOW_TOKENLESS=1 ? "" : machine-token file) > "".
 $token = $env:ROBLOX_MCP_TOKEN
 if ([string]::IsNullOrEmpty($token)) {
-    $tokenFile = Join-Path $env:LOCALAPPDATA "Roblox-MCP\broker-token"
-    if (Test-Path $tokenFile) {
-        $token = (Get-Content -Path $tokenFile -Raw).Trim()
+    if ($env:ROBLOX_MCP_ALLOW_TOKENLESS -eq "1") {
+        # Operator opted out of machine-token auth — the broker's loadOrMintMachineToken
+        # returns "" under this flag, so bake an empty AUTH_TOKEN to match (no auth).
+        $token = ""
+    } else {
+        $tokenFile = Join-Path $env:LOCALAPPDATA "Roblox-MCP\broker-token"
+        if (Test-Path $tokenFile) {
+            $token = (Get-Content -Path $tokenFile -Raw).Trim()
+        }
     }
 }
 if ([string]::IsNullOrEmpty($token)) { $token = "" }
