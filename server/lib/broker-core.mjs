@@ -199,10 +199,16 @@ export function createBrokerCore({
       .filter((s) => s.live || hasInFlight(s.studioId))
       .map((s) => s.studioId);
   }
-  async function fanoutSubmit(type, payload, timeoutMs, t) {
+  async function fanoutSubmit(type, payload, timeoutMs, t, sessionId) {
     const ids = liveStudioIds(t);
     const results = await Promise.all(ids.map(async (sid) => {
       const st = registry.getStudio(sid);
+      // §6.2: an exclusive claim rejects a non-holder's data command "incl. via
+      // per-call target" — and target:"all" IS a per-call target. Apply the SAME
+      // gate the non-fanout path runs; a studio locked by ANOTHER session is
+      // reported (STUDIO_LOCKED) and NOT enqueued, so it receives no command.
+      const gate = registry.enqueueGate(sessionId, sid, t);
+      if (gate && gate.error) return { studioId: sid, label: st ? st.label : null, result: gate };
       const studio = { id: sid, queue: cmdQueue(sid) };
       let result;
       try { result = await enqueueToStudio(studio, type, payload, timeoutMs); }
@@ -395,8 +401,11 @@ export function createBrokerCore({
         registry.touchSession(b.session_id, t);
 
         // C5.3: target:"all" → fan out to all live studios (§6.5).
+        // The per-studio exclusive-claim gate (§6.2) is applied INSIDE fanoutSubmit
+        // (a studio locked by another session is reported, not enqueued), so the
+        // session id must be threaded through.
         if (b.target === "all") {
-          fanoutSubmit(b.type, b.payload, b.timeout_ms || 30_000, t).then((r) => sendJson(res, 200, r));
+          fanoutSubmit(b.type, b.payload, b.timeout_ms || 30_000, t, b.session_id).then((r) => sendJson(res, 200, r));
           return;
         }
 

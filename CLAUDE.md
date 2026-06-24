@@ -151,6 +151,7 @@ A single session + single Studio **auto-pairs** with zero config and behaves exa
 - **Auth is on by default:** the broker auto-mints a machine token; `sync-plugin.ps1` bakes it into the plugin. After the broker's first start, re-run `.\sync-plugin.ps1` so the plugin carries the token, then reload the plugin in Studio.
 - **Rollback:** set `ROBLOX_MCP_MODE=inline` to restore the pre-broker single-session server (binds 8765, fatal on port conflict).
 - **Health probe:** `GET http://127.0.0.1:8765/health` returns `{ ok, role:"broker", proto:1, brokerId }` (no topology counts — those are behind the token-guarded `list_studios`).
+- **Known v1 limitations:** the broker does **not** yet auto-inject `__assign_studio_id` to reassign a contested 2nd window, nor auto-rekey a `legacy:default` studio to its real id on the first real `x-studio-id` — both self-heal (a contested studio resumes once one window's connId ages out; a legacy studio still routes). The plugin-side handler and the registry primitives (`rekeyStudio`, contested tracking) already exist as the v2 on-ramp.
 
 ## Blender connection check
 

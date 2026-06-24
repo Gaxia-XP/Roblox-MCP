@@ -288,6 +288,63 @@ test("C5: /session/submit target:'all' fans out to live studios -> { fanout:true
   } finally { close(); }
 });
 
+test("§6.2: fan-out target:'all' enforces the exclusive-claim gate — locked studio reported STUDIO_LOCKED & gets NO command; unclaimed studio enqueues normally", async () => {
+  const { port, core, registry, close } = await startCore();
+  try {
+    const t = Date.now();
+    // Session A holds an EXCLUSIVE claim on S1.
+    registry.upsertSession({ sessionId: "sessHoldA", pid: 1, label: "A" });
+    registry.mintSessionToken("sessHoldA", 1);
+    registry.upsertStudio({ studioId: "5100c1aa", label: "S1", connId: 1 }, t);
+    registry.upsertStudio({ studioId: "5200c2bb", label: "S2", connId: 2 }, t);
+    registry.touchStudio("5100c1aa", t); registry.touchStudio("5200c2bb", t);
+    const claim = registry.acquireClaim("sessHoldA", "5100c1aa", { mode: "exclusive" }, t);
+    assert.equal(claim.ok, true);
+    assert.equal(claim.claim.mode, "exclusive");
+
+    // Session B (does NOT hold S1's claim) fires studio_target:"all".
+    registry.upsertSession({ sessionId: "sessFireB", pid: 2, label: "B" });
+    const tokenB = registry.mintSessionToken("sessFireB", 2);
+    const submitP = req(port, {
+      method: "POST", path: "/session/submit",
+      headers: { "content-type": "application/json", "x-session-token": tokenB },
+      body: JSON.stringify({ session_id: "sessFireB", type: "set_property", payload: { p: 9 }, target: "all", timeout_ms: 5_000 }),
+    });
+
+    // Only S2 should receive/answer a command; S1 must be gated (no command to drain).
+    const poll = await req(port, { path: "/studio/poll", headers: { "x-studio-id": "5200c2bb" } });
+    const cmd = j(poll.body);
+    assert.equal(cmd.type, "set_property"); // S2 got the command
+    await req(port, {
+      method: "POST", path: `/studio/result/${cmd.id}`,
+      headers: { "x-studio-id": "5200c2bb" }, body: JSON.stringify({ ok: true, from: "5200c2bb" }),
+    });
+
+    const res = await submitP;
+    assert.equal(res.status, 200);
+    const b = j(res.body);
+    assert.equal(b.fanout, true);
+    assert.equal(b.results.length, 2);
+
+    const s1 = b.results.find((r) => r.studioId === "5100c1aa");
+    const s2 = b.results.find((r) => r.studioId === "5200c2bb");
+    // S1: locked entry, NOT mutated. enqueueGate's envelope is preserved.
+    assert.equal(s1.result.code, "STUDIO_LOCKED");
+    assert.equal(s1.result.error, "STUDIO_LOCKED");
+    assert.equal(s1.result.heldBy, "sessHoldA");
+    assert.equal(typeof s1.result.expiresAt, "number");
+    // S1 received NO command: its command queue is empty and nothing is in flight.
+    assert.equal(core._internals.cmdQueue("5100c1aa").pending.length, 0);
+    assert.equal(core._internals.countInFlight("5100c1aa"), 0);
+    // S2: enqueued + resolved normally.
+    assert.equal(s2.result.from, "5200c2bb");
+    assert.equal(s2.result.ok, true);
+    // Aggregate counts the locked studio as a failure, the resolved one as ok.
+    assert.equal(b.ok, 1);
+    assert.equal(b.failed, 1);
+  } finally { close(); }
+});
+
 test("C5.2: /session/submit control:true routes onto the control queue", async () => {
   const { port, core, registry, close } = await startCore();
   try {

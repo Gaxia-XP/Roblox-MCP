@@ -207,6 +207,67 @@ test("ensureBroker STEP B: connects as CLIENT to an already-running broker; subm
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// FIX 1: detach_studio admin-steal is REACHABLE — self-unpair leaves another
+// session's pair intact; a targeted detach_studio force-frees it (the only
+// documented escape from STUDIO_BUSY).
+// ───────────────────────────────────────────────────────────────────────────
+test("detach_studio: self-unpair does NOT free another session's studio; targeted detach_studio admin-steals it", async () => {
+  const port = await freePort();
+  const { registry, close } = await startRealBroker(port, "");
+  try {
+    // A live studio S that session A will attach.
+    const t = Date.now();
+    registry.upsertStudio({ studioId: "5d1ea101", label: "Steal", connId: 1 }, t);
+    registry.touchStudio("5d1ea101", t);
+
+    const clientA = await ensureBroker({ port, host: "127.0.0.1", authToken: "", brandPrefix: "[t]", sessionId: "aaaa1111-aaaa-1111-aaaa-1111aaaa1111" });
+    const clientB = await ensureBroker({ port, host: "127.0.0.1", authToken: "", brandPrefix: "[t]", sessionId: "bbbb2222-bbbb-2222-bbbb-2222bbbb2222" });
+    assert.equal(clientB.role, "client", "second arrival is a CLIENT");
+    try {
+      await clientA.register();
+      await clientB.register();
+
+      // A attaches S → A is paired to S.
+      const att = await clientA.attachStudio("5d1ea101");
+      assert.equal(att.ok, true);
+      assert.equal(att.studio_id, "5d1ea101");
+      assert.equal(registry.getStudio("5d1ea101").pairedSessionId, "aaaa1111-aaaa-1111-aaaa-1111aaaa1111");
+
+      // B's SELF-unpair (no target) must NOT touch A's pair of S.
+      const selfUnpair = await clientB.detachStudio();
+      assert.equal(selfUnpair.ok, true);
+      assert.equal(registry.getStudio("5d1ea101").pairedSessionId, "aaaa1111-aaaa-1111-aaaa-1111aaaa1111",
+        "self-unpair by B leaves A↔S intact");
+
+      // B attaching S now hits STUDIO_BUSY (it is paired to A).
+      const busy = await clientB.attachStudio("5d1ea101");
+      assert.equal(busy.code, "STUDIO_BUSY", "attach onto another session's studio is busy");
+
+      // B's TARGETED detach_studio { target:S } admin-steals it → A no longer paired.
+      const steal = await clientB.detachStudio("5d1ea101");
+      assert.equal(steal.ok, true, `admin steal envelope: ${JSON.stringify(steal)}`);
+      assert.equal(steal.freed.studio_id, "5d1ea101");
+      assert.equal(steal.freed.former_session_id, "aaaa1111-aaaa-1111-aaaa-1111aaaa1111");
+      assert.equal(registry.getStudio("5d1ea101").pairedSessionId, null, "S is freed after the steal");
+
+      // B can now attach S with no STUDIO_BUSY.
+      const ok = await clientB.attachStudio("5d1ea101");
+      assert.equal(ok.ok, true, `attach after steal succeeds: ${JSON.stringify(ok)}`);
+      assert.equal(registry.getStudio("5d1ea101").pairedSessionId, "bbbb2222-bbbb-2222-bbbb-2222bbbb2222");
+
+      // A targeted detach against a NON-EXISTENT label surfaces a typed error (resolution).
+      const miss = await clientB.detachStudio("no-such-studio-xyz");
+      assert.ok(miss && miss.error, "unresolved target → typed error envelope");
+    } finally {
+      clientA.stopHeartbeat();
+      clientB.stopHeartbeat();
+    }
+  } finally {
+    close();
+  }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // Step 9: STEP A — first arrival wins the direct bind, becomes the in-proc leader
 // ───────────────────────────────────────────────────────────────────────────
 test("ensureBroker STEP A: first arrival wins the direct bind and becomes the in-proc leader", async () => {

@@ -354,9 +354,27 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
     await ensureRegistered();
     return (await httpJson({ port, host, method: "POST", path: "/session/attach", headers: baseHeaders(), body: { session_id: sessionId, target, claim } })).json;
   };
+  // detach_studio: documented two-form semantics.
+  //   no target  → self-unpair (drop THIS session's own pair) via /session/unpair.
+  //   has target → admin steal: force-free the named studio even if it is paired
+  //                to ANOTHER session, via /session/detach-studio. The registry's
+  //                detachStudio() keys on a resolved studioId (not a label), so we
+  //                resolve the same id/label forms attach_studio accepts (§5.6)
+  //                first, then POST the concrete studio_id.
   const detachStudio = async (target) => {
     await ensureRegistered();
-    return (await httpJson({ port, host, method: "POST", path: "/session/unpair", headers: baseHeaders(), body: { session_id: sessionId, target } })).json;
+    const t = typeof target === "string" ? target.trim() : "";
+    if (!t) {
+      return (await httpJson({ port, host, method: "POST", path: "/session/unpair", headers: baseHeaders(), body: { session_id: sessionId } })).json;
+    }
+    const resolved = await resolveSessionTarget(t);
+    if (resolved && resolved.error) return resolved; // surface UNKNOWN/AMBIGUOUS_TARGET verbatim
+    const studioId = resolved && resolved.studioId;
+    if (!studioId) return { error: "UNKNOWN_TARGET", code: "UNKNOWN_TARGET", message: `no studio matches '${t}'` };
+    return (await httpJson({
+      port, host, method: "POST", path: "/session/detach-studio", headers: baseHeaders(),
+      body: { session_id: sessionId, studio_id: studioId },
+    })).json;
   };
   const sessionStatus = async () => getStatus();
 
