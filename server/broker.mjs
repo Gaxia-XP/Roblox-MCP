@@ -6,11 +6,9 @@
  * FE, or bound in-proc by the election winner. Zero MCP SDK; node builtins +
  * lib helpers only. EADDRINUSE (race loser) => exit 0; other errors => exit 1.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { createRegistry } from "./lib/registry.mjs";
 import { createBrokerCore } from "./lib/broker-core.mjs";
+import { loadOrMintMachineToken } from "./lib/broker-client.mjs";
 
 const REAP_TICK_MS = 5_000;
 
@@ -26,30 +24,12 @@ const IDLE_REAP_MS = (() => {
 // C6: the broker is the consumer that supplies requireExplicitPair from env.
 const REQUIRE_EXPLICIT_PAIR = process.env.ROBLOX_MCP_REQUIRE_EXPLICIT_PAIR === "1";
 
-// ── machine token (§2.7, C4): default ON when ROBLOX_MCP_TOKEN unset ──
-function localAppData() {
-  return process.env.LOCALAPPDATA || join(process.env.USERPROFILE || process.env.HOME || ".", "AppData", "Local");
-}
-function resolveAuthToken() {
-  const explicit = (process.env.ROBLOX_MCP_TOKEN || "").trim();
-  if (explicit) return explicit; // operator override wins
-  if (process.env.ROBLOX_MCP_ALLOW_TOKENLESS === "1") return ""; // explicit opt-out
-  // Default ON: load-or-mint a persisted machine token with a restrictive ACL.
-  const dir = join(localAppData(), "Roblox-MCP");
-  const file = join(dir, "broker-token");
-  try {
-    if (existsSync(file)) { const t = readFileSync(file, "utf8").trim(); if (t) return t; }
-    mkdirSync(dir, { recursive: true });
-    const tok = randomBytes(24).toString("hex");
-    writeFileSync(file, tok, { mode: 0o600 });
-    return tok;
-  } catch {
-    // Can't persist a machine token → fall back to tokenless (no worse than today).
-    return "";
-  }
-}
-
-const authToken = resolveAuthToken();
+// ── machine token (§2.7, C4) ──
+// Single source of truth: delegate to broker-client's loadOrMintMachineToken so
+// the detached child (this process) and the in-proc election leader (ensureBroker)
+// read/mint THE SAME token at THE SAME path. Order: explicit ROBLOX_MCP_TOKEN >
+// persisted broker-token file > tokenless opt-out > mint (default ON).
+const authToken = loadOrMintMachineToken();
 const registry = createRegistry({
   now: Date.now,
   thresholds: {},
