@@ -277,6 +277,47 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
     return r.json;
   }
 
+  // ── Control queue (C3) — start_stop_play{stop} → __stop_play, non-blocking ──
+  // Routes onto the target studio's CONTROL queue so it reaches a plugin whose
+  // COMMAND loop is yielded inside a play test. `control:true` makes broker-core
+  // enqueue + return immediately ({ ok:true, control:true, ... }) rather than
+  // blocking on a plugin result. `target` may be null → broker resolves the
+  // paired/auto studio (returns a typed {error,code} on an unresolved target).
+  async function submitControl(target, type, payload, timeoutMs = 30_000) {
+    await ensureRegistered();
+    const r = await httpJson({
+      port, host, method: "POST", path: "/session/submit", headers: baseHeaders(),
+      body: { session_id: sessionId, type, payload, target: target || undefined, control: true, timeout_ms: timeoutMs },
+      timeoutMs: timeoutMs + 5_000,
+    }).catch(() => ({ json: null }));
+    if (r.json == null) return { error: "broker connection lost — retried; rerun the tool", code: "NO_BROKER" };
+    return r.json;
+  }
+
+  // ── Fan-out (target:"all") — broker-core resolves { fanout, results, ok, failed } ──
+  async function fanoutSubmit(type, payload, timeoutMs = 30_000) {
+    await ensureRegistered();
+    const r = await httpJson({
+      port, host, method: "POST", path: "/session/submit", headers: baseHeaders(),
+      body: { session_id: sessionId, type, payload, target: "all", timeout_ms: timeoutMs },
+      timeoutMs: timeoutMs + 5_000,
+    }).catch(() => ({ json: null }));
+    if (r.json == null) return { fanout: true, results: [], ok: 0, failed: 0, error: "broker connection lost", code: "NO_BROKER" };
+    return r.json;
+  }
+
+  // ── Resolve one studio for the caller (used to PIN a composite mesh build) ──
+  // Returns the registry envelope verbatim: { ok, studioId, via } | { error, code, ... }.
+  async function resolveSessionTarget(explicitTarget) {
+    await ensureRegistered();
+    const r = await httpJson({
+      port, host, method: "POST", path: "/session/resolve-target", headers: baseHeaders(),
+      body: { session_id: sessionId, target: explicitTarget || undefined },
+    }).catch(() => ({ json: null }));
+    if (r.json == null) return { error: "broker connection lost", code: "NO_BROKER" };
+    return r.json;
+  }
+
   async function getStatus() {
     await ensureRegistered();
     const r = await httpJson({
@@ -317,7 +358,8 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
 
   return {
     role, get brokerId() { return currentBrokerId; }, httpServer,
-    submit, submitTo, getStatus, register, heartbeat, deregister,
+    submit, submitTo, submitControl, fanoutSubmit, resolveSessionTarget,
+    getStatus, register, heartbeat, deregister,
     listStudios, attachStudio, detachStudio, sessionStatus,
     stopHeartbeat: () => clearInterval(hbTimer),
   };
