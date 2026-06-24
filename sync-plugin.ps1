@@ -10,10 +10,33 @@ if (-not (Test-Path $src)) {
     exit 1
 }
 
-Copy-Item -Path $src -Destination $dst -Force
+# Resolve the outer token to bake into the plugin's AUTH_TOKEN.
+# Precedence: explicit ROBLOX_MCP_TOKEN env > machine-token file > "" (zero-config first run).
+$token = $env:ROBLOX_MCP_TOKEN
+if ([string]::IsNullOrEmpty($token)) {
+    $tokenFile = Join-Path $env:LOCALAPPDATA "Roblox-MCP\broker-token"
+    if (Test-Path $tokenFile) {
+        $token = (Get-Content -Path $tokenFile -Raw).Trim()
+    }
+}
+if ([string]::IsNullOrEmpty($token)) { $token = "" }
+
+# Read source, rewrite the AUTH_TOKEN line, then write to destination.
+# Regex matches any previously-baked value so re-syncs are idempotent.
+$content = Get-Content -Path $src -Raw
+$escaped = $token.Replace('\', '\\').Replace('"', '\"')
+$content = $content -replace '(?m)^(local AUTH_TOKEN = ")[^"]*(")', "local AUTH_TOKEN = `"$escaped`""
+Set-Content -Path $dst -Value $content -Encoding utf8 -NoNewline
+
 $size = (Get-Item $dst).Length
 Write-Host "[OK] Synced plugin ($size bytes)" -ForegroundColor Green
 Write-Host "     $src" -ForegroundColor DarkGray
 Write-Host "  -> $dst" -ForegroundColor DarkGray
+
+if ($token -ne "") {
+    Write-Host "[OK] Baked AUTH_TOKEN into plugin (machine-token auth ENABLED)" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] No token found — plugin installed WITHOUT auth (start the broker once, then re-run to bake the machine token)" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "Next: In Roblox Studio, click Plugins tab -> right-click MultiAIPlugin -> Reload" -ForegroundColor Yellow

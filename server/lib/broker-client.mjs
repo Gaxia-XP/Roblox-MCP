@@ -181,6 +181,22 @@ async function connect({ port, host, authToken, sessionId, brandPrefix }) {
   return null; // unreachable — retry
 }
 
+// ── buildSpawnEnv (§3.4 allowlist) ──
+// Pure function: returns only the explicitly-allowlisted env keys needed by the
+// detached broker child. NEVER spreads or copies process.env — Open-Cloud creds
+// and any *_KEY / *_TOKEN (besides ROBLOX_MCP_TOKEN) are never forwarded.
+export function buildSpawnEnv({ port, host, authToken, idleMs } = {}) {
+  return {
+    PATH: process.env.PATH,
+    SystemRoot: process.env.SystemRoot,
+    MCP_BROKER_PORT: String(port),
+    MCP_BROKER_HOST: host,
+    MCP_BROKER_ROLE: "spawned",
+    ROBLOX_MCP_TOKEN: authToken || "",
+    ROBLOX_MCP_BROKER_IDLE_MS: idleMs !== undefined ? String(idleMs) : (process.env.ROBLOX_MCP_BROKER_IDLE_MS ?? ""),
+  };
+}
+
 // ── Detached spawn (§3.4) — ALLOWLIST env, explicit cwd, first-spawn log ──
 function spawnDetachedBroker({ port, host, authToken }) {
   if (!existsSync(ROOT_DIR)) mkdirSync(ROOT_DIR, { recursive: true });
@@ -192,15 +208,7 @@ function spawnDetachedBroker({ port, host, authToken }) {
     cwd: dirname(brokerPath),               // broker.mjs's dir, NOT the inherited (Drive-junction) cwd
     stdio: ["ignore", "ignore", logFd],     // capture stderr to broker-spawn.log for the startup window
     windowsHide: true,
-    env: {                                  // ALLOWLIST — never {...process.env}
-      PATH: process.env.PATH,
-      SystemRoot: process.env.SystemRoot,
-      MCP_BROKER_PORT: String(port),
-      MCP_BROKER_HOST: host,
-      MCP_BROKER_ROLE: "spawned",
-      ROBLOX_MCP_TOKEN: authToken || "",
-      ROBLOX_MCP_BROKER_IDLE_MS: process.env.ROBLOX_MCP_BROKER_IDLE_MS ?? "",
-    },                                      // explicit allowlist — Open-Cloud creds / any *_KEY are NEVER copied in
+    env: buildSpawnEnv({ port, host, authToken }), // ALLOWLIST — never {...process.env}
   });
   child.unref();
 }
