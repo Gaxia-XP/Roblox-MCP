@@ -17,6 +17,43 @@ local RunService = game:GetService("RunService")
 local SERVER_URL = "http://127.0.0.1:8765"
 local POLL_INTERVAL = 0.5
 local MCP_STOP_SIGNAL_KEY = "MultiAI_StopPlaySignal"
+local STUDIO_ID_KEY = "MultiAI_StudioId"
+local CONTROL_POLL_INTERVAL = 1.0
+
+-- ---------------------------------------------------------------------------
+-- Studio identity: a stable per-Studio-window id the broker uses for routing.
+-- Minted via HttpService:GenerateGUID (32 hex, no braces), persisted with
+-- plugin:SetSetting (the same cross-session persistence class proven by
+-- MultiAI_StopPlaySignal). NOT PlaceId (0 for unsaved / identical across
+-- windows) nor JobId ("" in Edit). All persistence is pcall-guarded: if
+-- SetSetting/GetSetting fail, the id is still minted per-load (a non-persistent
+-- fallback — strictly no worse than today, which carries no identity at all).
+-- `studioId` is a mutable upvalue: the __assign_studio_id handler reassigns it
+-- in place so the next poll's requestHeaders() carries the new id.
+-- ---------------------------------------------------------------------------
+local studioId: string = (function(): string
+    local okGet, stored = pcall(function() return plugin:GetSetting(STUDIO_ID_KEY) end)
+    if okGet and typeof(stored) == "string" and stored ~= "" then
+        return stored
+    end
+    local minted = HttpService:GenerateGUID(false)
+    pcall(function() plugin:SetSetting(STUDIO_ID_KEY, minted) end)
+    return minted
+end)()
+
+-- Advisory display label (never a routing key): game name + short id suffix.
+local studioLabel: string = (function(): string
+    local name = "Studio"
+    local okName, gameName = pcall(function() return game.Name end)
+    if okName and typeof(gameName) == "string" and gameName ~= "" then
+        name = gameName
+    end
+    return `{name} #{string.sub(studioId, 1, 4)}`
+end)()
+
+-- Tracks whether the current studioLabel has already been sent, so steady-state
+-- polls omit x-studio-label and only re-send it when it changes.
+local labelSent = false
 
 -- Optional shared secret. Leave "" for the default (no auth). To require auth,
 -- set this to the same value as the server's ROBLOX_MCP_TOKEN env var, then
@@ -24,12 +61,27 @@ local MCP_STOP_SIGNAL_KEY = "MultiAI_StopPlaySignal"
 -- `x-mcp-token` header on every /poll and /result request.
 local AUTH_TOKEN = ""
 
--- Header table for authenticated requests (nil when no token is configured).
-local function authHeaders(): { [string]: string }?
+-- Header table for every broker request. ALWAYS carries x-studio-id (re-reading
+-- the LIVE studioId upvalue on each call — never a load-time capture, so an
+-- __assign_studio_id reassignment is reflected on the very next poll). Adds
+-- x-mcp-token only when AUTH_TOKEN is configured, and x-studio-label only on the
+-- first send or after the label changes (steady-state polls send id-only).
+local function requestHeaders(includeLabel: boolean?): { [string]: string }
+    local headers: { [string]: string } = { ["x-studio-id"] = studioId }
     if AUTH_TOKEN ~= "" then
-        return { ["x-mcp-token"] = AUTH_TOKEN }
+        headers["x-mcp-token"] = AUTH_TOKEN
     end
-    return nil
+    if includeLabel and not labelSent then
+        headers["x-studio-label"] = studioLabel
+        labelSent = true
+    end
+    return headers
+end
+
+-- Back-compat alias: any historical authHeaders() call now delegates to
+-- requestHeaders() so it keeps sending x-studio-id too.
+local function authHeaders(): { [string]: string }
+    return requestHeaders(false)
 end
 
 -- ---------------------------------------------------------------------------
@@ -157,6 +209,38 @@ end
 -- ---------------------------------------------------------------------------
 
 local handlers: { [string]: (any) -> any } = {}
+
+-- ── Broker control commands (delivered on the control loop; never user tools) ──
+
+-- Reassign this Studio's id when the broker detects two windows sharing the same
+-- persisted MultiAI_StudioId (the "contested" case). The broker hands the second
+-- window a fresh GUID; we validate, persist, and mutate the live studioId upvalue
+-- so the very next poll's requestHeaders() carries the new id.
+handlers.__assign_studio_id = function(payload)
+    local newId = payload.studio_id
+    if typeof(newId) ~= "string" or not string.match(newId, "^[0-9a-fA-F%-]+$") then
+        return { ok = false, error = "invalid studio_id" }
+    end
+    local len = string.len(newId)
+    if len < 8 or len > 64 then
+        return { ok = false, error = "studio_id length out of range" }
+    end
+    pcall(function() plugin:SetSetting(STUDIO_ID_KEY, newId) end)
+    studioId = newId
+    studioLabel = `Studio #{string.sub(studioId, 1, 4)}`
+    labelSent = false
+    return { ok = true, studio_id = studioId }
+end
+
+-- Arm the existing Server-context StopPlaySignal watcher (the RunService:IsServer
+-- block near the top of this file, UNTOUCHED) so a second session can stop a play
+-- test even while THIS plugin's command loop is yielded inside
+-- ExecutePlayModeAsync. Only SetSetting — returns immediately, never blocks the
+-- control loop.
+handlers.__stop_play = function(_payload)
+    pcall(function() plugin:SetSetting(MCP_STOP_SIGNAL_KEY, true) end)
+    return { ok = true }
+end
 
 handlers.run_luau = function(payload)
     local code = payload.code
@@ -3077,7 +3161,7 @@ local function loop()
     print(`[MultiAI] Polling started — {SERVER_URL}`)
     while running do
         local ok, response = pcall(function()
-            return HttpService:GetAsync(SERVER_URL .. "/poll", true, authHeaders())
+            return HttpService:GetAsync(SERVER_URL .. "/poll", true, requestHeaders(true))
         end)
         if ok then
             -- Server responded → connection healthy
@@ -3098,7 +3182,7 @@ local function loop()
                             HttpService:JSONEncode(result),
                             Enum.HttpContentType.ApplicationJson,
                             false,
-                            authHeaders()
+                            requestHeaders(false)
                         )
                     end)
                     if not postOk then warn(`[MultiAI] post failed: {tostring(postErr)}`) end
@@ -3120,11 +3204,48 @@ local function loop()
     print("[MultiAI] Polling stopped")
 end
 
+-- ── Control loop ──
+-- A SECOND, independent poll loop on a short interval. Unlike the command loop
+-- (which yields for the full duration of a long handler such as
+-- ExecutePlayModeAsync), the control loop only ever dispatches __assign_studio_id
+-- / __stop_play — handlers that just SetSetting/mutate an upvalue and return — so
+-- it stays responsive during play mode. This is the channel that delivers
+-- cross-session play-stop and same-id collision reassignment. It never touches
+-- the command loop's `connected` visual. In inline mode the broker 404s
+-- /studio/control-poll; the pcall swallows it and the loop idles harmlessly.
+local controlThread: thread? = nil
+
+local function controlLoop()
+    while running do
+        local ok, response = pcall(function()
+            return HttpService:GetAsync(SERVER_URL .. "/studio/control-poll", true, requestHeaders(false))
+        end)
+        if ok and response and response ~= "" and response ~= "{}" then
+            local decoded
+            local decodeOk = pcall(function() decoded = HttpService:JSONDecode(response) end)
+            if decodeOk and decoded and decoded.id then
+                local result = executeCommand(decoded)
+                pcall(function()
+                    HttpService:PostAsync(
+                        SERVER_URL .. "/studio/result/" .. decoded.id,
+                        HttpService:JSONEncode(result),
+                        Enum.HttpContentType.ApplicationJson,
+                        false,
+                        requestHeaders(false)
+                    )
+                end)
+            end
+        end
+        task.wait(CONTROL_POLL_INTERVAL)
+    end
+end
+
 local function startPolling()
     if running then return end
     running = true
     setStatusVisual("connecting")
     connectionThread = task.spawn(loop)
+    controlThread = task.spawn(controlLoop)
 end
 
 local function stopPolling()
