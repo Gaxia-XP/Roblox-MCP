@@ -10,7 +10,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
-const SENSITIVE_HEADER_RE = /^(x-api-key|x-mcp-token|authorization|x-open-cloud-api-key|.*-key)$/i;
+export const SENSITIVE_HEADER_RE = /^(x-api-key|x-mcp-token|authorization|x-open-cloud-api-key|.*-key)$/i;
 
 /** Return a shallow copy of `headers` with secret values replaced by "[REDACTED]". */
 export function redactHeaders(headers) {
@@ -19,6 +19,137 @@ export function redactHeaders(headers) {
     out[k] = SENSITIVE_HEADER_RE.test(k) ? "[REDACTED]" : v;
   }
   return out;
+}
+
+/** Build the loopback host allowlist for a concrete host:port. */
+export function makeHostSet(host, port) {
+  return new Set([`${host}:${port}`, `localhost:${port}`]);
+}
+
+/** True if the request's Host header is in the allowlist. */
+export function hostAllowed(hostHeader, hosts) {
+  return hosts.has(hostHeader || "");
+}
+
+/** Legacy outer-token guard set: /poll, /submit, /result/* require x-mcp-token. */
+export function tokenGuarded(pathname) {
+  return pathname === "/poll" || pathname === "/submit" || pathname.startsWith("/result/");
+}
+
+/**
+ * Read a request body with an 8MB-class cap and a body timeout. 413 on cap,
+ * 408 on timeout, single-finish guard, req.destroy on error. Extracted verbatim
+ * from the inline createBridge body.
+ */
+export function readBody(req, res, onComplete, { maxBodyBytes, bodyTimeoutMs }) {
+  let body = "";
+  let bytes = 0;
+  let done = false;
+  const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); fn(); };
+  const timer = setTimeout(() => {
+    finish(() => {
+      try { res.writeHead(408, { "Content-Type": "application/json" }); res.end('{"error":"request timeout"}'); } catch {}
+      req.destroy();
+    });
+  }, bodyTimeoutMs);
+  req.on("data", (c) => {
+    if (done) return;
+    bytes += c.length;
+    if (bytes > maxBodyBytes) {
+      finish(() => {
+        try { res.writeHead(413, { "Content-Type": "application/json" }); res.end('{"error":"payload too large"}'); } catch {}
+        req.destroy();
+      });
+      return;
+    }
+    body += c;
+  });
+  req.on("end", () => finish(() => onComplete(body)));
+  req.on("error", () => finish(() => { try { req.destroy(); } catch {} }));
+}
+
+/** Attach the verbatim clientError handler (truncated/oversize-line malformed requests). */
+export function attachClientError(httpServer) {
+  httpServer.on("clientError", (err, socket) => {
+    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  });
+}
+
+/**
+ * Attach the FATAL listen-error handler used by the inline createBridge / inline
+ * mode: EADDRINUSE (or any error) → log + process.exit(1). The broker does NOT
+ * use this — it surfaces EADDRINUSE to ensureBroker as a lost election (later task).
+ */
+export function attachFatalListenError(httpServer, { host, port, brandPrefix }) {
+  httpServer.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`${brandPrefix} FATAL: ${host}:${port} is already in use — another server is bound to it. Close it and retry.`);
+    } else {
+      console.error(`${brandPrefix} FATAL: HTTP server error: ${err.message}`);
+    }
+    process.exit(1);
+  });
+}
+
+/**
+ * Per-studio FIFO command queue: pending commands + parked long-poll waiters.
+ * A waiter is a `(cmd) => boolean` responder: it res.end()s the command and
+ * returns true, or throws / returns false if its socket is already dead.
+ * deliverOrQueue skips dead waiters and, on a delivery that throws mid-write,
+ * re-queues the command at the FRONT of pending so the next live poll gets it
+ * (the §4.4 dropped-long-poll reaping fix — implemented once, shared by inline
+ * createBridge and the broker).
+ */
+export function createCommandQueue() {
+  const pending = [];
+  const waiters = [];
+
+  function deliverOrQueue(cmd) {
+    while (waiters.length > 0) {
+      const w = waiters.shift();
+      try {
+        if (w(cmd) === true) return; // delivered to a live socket
+      } catch {
+        // res.end threw: socket died between park and delivery.
+        // Re-queue at the FRONT so the very next live poll gets this command,
+        // then keep trying any remaining parked waiters.
+        pending.unshift(cmd);
+        return;
+      }
+      // w returned false (dead, no throw): drop it, try the next waiter.
+    }
+    pending.push(cmd);
+  }
+
+  function removePending(id) {
+    const i = pending.findIndex((c) => c.id === id);
+    if (i >= 0) { pending.splice(i, 1); return true; }
+    return false;
+  }
+
+  // Register a long-poll responder. req 'close' reaps the parked waiter and
+  // fires onAbandon() (the route clears its own poll timeout there). Returns an
+  // unpark() the route calls on its own timeout/delivery so the close handler
+  // becomes a no-op.
+  function parkWaiter(waiterFn, req, onAbandon) {
+    let removed = false;
+    const remove = () => {
+      if (removed) return false;
+      removed = true;
+      const i = waiters.indexOf(waiterFn);
+      if (i >= 0) waiters.splice(i, 1);
+      return true;
+    };
+    const onClose = () => { if (remove()) onAbandon(); };
+    req.on("close", onClose);
+    waiters.push(waiterFn);
+    return function unpark() {
+      remove();
+      req.removeListener("close", onClose);
+    };
+  }
+
+  return { pending, waiters, deliverOrQueue, removePending, parkWaiter };
 }
 
 export function createBridge({
@@ -34,13 +165,12 @@ export function createBridge({
   pluginStaleMs = 12_000,
   onListen,
 } = {}) {
-  const pending = [];
+  const queue = createCommandQueue();
   const inFlight = new Map();
-  const waiters = [];
   let lastPollAt = 0;
   // For a concrete port the allowlist is fixed up front; for port 0 (ephemeral —
   // used by tests) it is rebuilt in the listen callback once the OS assigns one.
-  let hosts = allowedHosts || new Set([`${host}:${port}`, `localhost:${port}`]);
+  let hosts = allowedHosts || makeHostSet(host, port);
 
   function submit(type, payload, timeoutMs = defaultTimeoutMs) {
     return new Promise((resolve) => {
@@ -48,41 +178,12 @@ export function createBridge({
       const cmd = { id, type, payload };
       const timeout = setTimeout(() => {
         inFlight.delete(id);
-        const qi = pending.findIndex((c) => c.id === id);
-        if (qi >= 0) pending.splice(qi, 1);
+        queue.removePending(id);
         resolve({ error: `timeout after ${timeoutMs}ms — is the ${brandPrefix} plugin/addon connected?` });
       }, timeoutMs);
       inFlight.set(id, { resolve, timeout });
-      if (waiters.length > 0) waiters.shift()(cmd);
-      else pending.push(cmd);
+      queue.deliverOrQueue(cmd);
     });
-  }
-
-  function readBody(req, res, onComplete) {
-    let body = "";
-    let bytes = 0;
-    let done = false;
-    const finish = (fn) => { if (done) return; done = true; clearTimeout(timer); fn(); };
-    const timer = setTimeout(() => {
-      finish(() => {
-        try { res.writeHead(408, { "Content-Type": "application/json" }); res.end('{"error":"request timeout"}'); } catch {}
-        req.destroy();
-      });
-    }, bodyTimeoutMs);
-    req.on("data", (c) => {
-      if (done) return;
-      bytes += c.length;
-      if (bytes > maxBodyBytes) {
-        finish(() => {
-          try { res.writeHead(413, { "Content-Type": "application/json" }); res.end('{"error":"payload too large"}'); } catch {}
-          req.destroy();
-        });
-        return;
-      }
-      body += c;
-    });
-    req.on("end", () => finish(() => onComplete(body)));
-    req.on("error", () => finish(() => { try { req.destroy(); } catch {} }));
   }
 
   function getStatus() {
@@ -92,25 +193,23 @@ export function createBridge({
     return {
       pluginConnected,
       msSinceLastPoll: sinceLastPoll,
-      queued: pending.length,
+      queued: queue.pending.length,
       inFlight: inFlight.size,
-      ready: pluginConnected && inFlight.size === 0 && pending.length === 0,
+      ready: pluginConnected && inFlight.size === 0 && queue.pending.length === 0,
     };
   }
 
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
 
-    if (!hosts.has(req.headers.host || "")) {
+    if (!hostAllowed(req.headers.host, hosts)) {
       res.writeHead(403, { "Content-Type": "application/json" });
       res.end('{"error":"forbidden host"}');
       return;
     }
 
-    if (authToken) {
-      const p = url.pathname;
-      const guarded = p === "/poll" || p === "/submit" || p.startsWith("/result/");
-      if (guarded && req.headers["x-mcp-token"] !== authToken) {
+    if (authToken && tokenGuarded(url.pathname)) {
+      if (req.headers["x-mcp-token"] !== authToken) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end('{"error":"unauthorized"}');
         return;
@@ -119,28 +218,31 @@ export function createBridge({
 
     if (req.method === "GET" && url.pathname === "/poll") {
       lastPollAt = Date.now();
-      if (pending.length > 0) {
+      if (queue.pending.length > 0) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(pending.shift()));
+        res.end(JSON.stringify(queue.pending.shift()));
         return;
       }
       let sent = false;
+      let unpark;
       const timer = setTimeout(() => {
         if (sent) return;
         sent = true;
-        const idx = waiters.indexOf(waiter);
-        if (idx >= 0) waiters.splice(idx, 1);
+        if (unpark) unpark();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end("{}");
       }, pollTimeoutMs);
       const waiter = (cmd) => {
-        if (sent) return;
+        if (sent) return false;
         sent = true;
         clearTimeout(timer);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(cmd));
+        return true;
       };
-      waiters.push(waiter);
+      // parkWaiter reaps this waiter (and clears `timer`) if the client drops
+      // the long-poll before a command arrives.
+      unpark = queue.parkWaiter(waiter, req, () => clearTimeout(timer));
       return;
     }
 
@@ -158,7 +260,7 @@ export function createBridge({
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end('{"ok":true}');
-      });
+      }, { maxBodyBytes, bodyTimeoutMs });
       return;
     }
 
@@ -173,13 +275,13 @@ export function createBridge({
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end('{"error":"bad request"}');
         }
-      });
+      }, { maxBodyBytes, bodyTimeoutMs });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, queued: pending.length, inFlight: inFlight.size }));
+      res.end(JSON.stringify({ ok: true, queued: queue.pending.length, inFlight: inFlight.size }));
       return;
     }
 
@@ -193,23 +295,13 @@ export function createBridge({
     res.end();
   });
 
-  httpServer.on("clientError", (err, socket) => {
-    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
-  });
-
-  httpServer.on("error", (err) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(`${brandPrefix} FATAL: ${host}:${port} is already in use — another server is bound to it. Close it and retry.`);
-    } else {
-      console.error(`${brandPrefix} FATAL: HTTP server error: ${err.message}`);
-    }
-    process.exit(1);
-  });
+  attachClientError(httpServer);
+  attachFatalListenError(httpServer, { host, port, brandPrefix });
 
   httpServer.listen(port, host, () => {
     if (!allowedHosts && port === 0) {
       const real = httpServer.address().port; // ephemeral: rebuild allowlist with the assigned port
-      hosts = new Set([`${host}:${real}`, `localhost:${real}`]);
+      hosts = makeHostSet(host, real);
     }
     console.error(
       authToken
