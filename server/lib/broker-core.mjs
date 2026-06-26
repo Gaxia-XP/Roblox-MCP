@@ -498,6 +498,29 @@ export function createBrokerCore({
         sendJson(res, 200, { ok: true, paired_session: st?.pairedSessionId || null });
       });
     }
+    if (req.method === "GET" && p === "/studio/sessions") {
+      const studioId = studioIdFrom(req);
+      const snap = registry.snapshot(now());
+      const you = registry.getStudio(studioId);
+      sendJson(res, 200, {
+        ok: true,
+        you: { studio_id: studioId, paired_session_id: you?.pairedSessionId || null },
+        sessions: snap.sessions
+          .filter((s) => s.live)
+          .map((s) => ({
+            session_id: s.sessionId, label: s.label,
+            paired_studio_id: s.pairedStudioId || null, live: s.live,
+          })),
+      });
+      return;
+    }
+    if (req.method === "POST" && p === "/studio/pair") {
+      return readJson(req, res, (b) => {
+        const studioId = studioIdFrom(req);
+        if (b.session_id === null) return sendJson(res, 200, registry.unpairStudio(studioId, now()));
+        sendJson(res, 200, registry.pairStudioToSession(studioId, b.session_id, now()));
+      });
+    }
 
     // session plane
     if (handleSessionPlane(req, res, url, p)) return;

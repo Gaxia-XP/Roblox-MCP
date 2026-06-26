@@ -401,3 +401,55 @@ test("broker.mjs: binds a free port, answers /health, then a 2nd instance on the
     child.kill();
   }
 });
+
+// ── studio plane: session picker (GET /studio/sessions, POST /studio/pair) ──
+test("GET /studio/sessions: live sessions + you.paired_session_id; 401 without token", async () => {
+  const { port, registry, close } = await startCore({ authToken: "s3cret" });
+  try {
+    registry.upsertStudio({ studioId: "5701d001", label: "Win", connId: 1, legacy: false });
+    registry.upsertSession({ sessionId: "sess-A", label: "repoA", pid: 1 });
+    registry.upsertSession({ sessionId: "sess-B", label: "repoB", pid: 2 });
+
+    const noTok = await req(port, { path: "/studio/sessions", headers: { "x-studio-id": "5701d001" } });
+    assert.equal(noTok.status, 401);
+
+    const r = await req(port, { path: "/studio/sessions", headers: { "x-studio-id": "5701d001", "x-mcp-token": "s3cret" } });
+    assert.equal(r.status, 200);
+    const b = j(r.body);
+    assert.equal(b.ok, true);
+    assert.equal(b.you.studio_id, "5701d001");
+    assert.equal(b.you.paired_session_id, null);
+    assert.equal(b.sessions.length, 2);
+    const a = b.sessions.find((s) => s.session_id === "sess-A");
+    assert.equal(a.label, "repoA");
+    assert.equal(a.paired_studio_id, null);
+    assert.equal(a.live, true);
+  } finally { close(); }
+});
+
+test("POST /studio/pair binds, switches, unpairs (session_id:null), errors on unknown", async () => {
+  const { port, registry, close } = await startCore({ authToken: "s3cret" });
+  const H = { "x-studio-id": "5701d001", "x-mcp-token": "s3cret" };
+  try {
+    registry.upsertStudio({ studioId: "5701d001", label: "Win", connId: 1, legacy: false });
+    registry.upsertSession({ sessionId: "sess-A", label: "A", pid: 1 });
+    registry.upsertSession({ sessionId: "sess-B", label: "B", pid: 2 });
+
+    const pair = await req(port, { method: "POST", path: "/studio/pair", headers: H, body: JSON.stringify({ session_id: "sess-A" }) });
+    assert.equal(pair.status, 200);
+    assert.equal(j(pair.body).ok, true);
+    assert.equal(registry.getStudio("5701d001").pairedSessionId, "sess-A");
+
+    const sw = await req(port, { method: "POST", path: "/studio/pair", headers: H, body: JSON.stringify({ session_id: "sess-B" }) });
+    assert.equal(j(sw.body).ok, true);
+    assert.equal(registry.getStudio("5701d001").pairedSessionId, "sess-B");
+    assert.equal(registry.getSession("sess-A").pairedStudioId, null);
+
+    const un = await req(port, { method: "POST", path: "/studio/pair", headers: H, body: JSON.stringify({ session_id: null }) });
+    assert.equal(j(un.body).detached, true);
+    assert.equal(registry.getStudio("5701d001").pairedSessionId, null);
+
+    const bad = await req(port, { method: "POST", path: "/studio/pair", headers: H, body: JSON.stringify({ session_id: "ghost" }) });
+    assert.equal(j(bad.body).code, "UNKNOWN_SESSION");
+  } finally { close(); }
+});
