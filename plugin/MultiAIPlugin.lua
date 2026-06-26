@@ -3292,7 +3292,15 @@ pickerLayout.Parent = pickerList
 -- POST /studio/pair to bind this window to `sessionId` (or unpair when nil).
 local function pairTo(sessionId: string?)
     task.spawn(function()
-        local body = HttpService:JSONEncode({ session_id = sessionId })
+        -- nil = disconnect. In Luau `{ session_id = nil }` drops the key and encodes
+        -- to "[]", which the broker reads as a MISSING field (not a disconnect). Send
+        -- an explicit JSON null so POST /studio/pair routes to unpairStudio.
+        local body
+        if sessionId == nil then
+            body = "{\"session_id\":null}"
+        else
+            body = HttpService:JSONEncode({ session_id = sessionId })
+        end
         pcall(function()
             HttpService:PostAsync(
                 SERVER_URL .. "/studio/pair", body,
