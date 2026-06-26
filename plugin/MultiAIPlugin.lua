@@ -31,15 +31,14 @@ local CONTROL_POLL_INTERVAL = 1.0
 -- `studioId` is a mutable upvalue: the __assign_studio_id handler reassigns it
 -- in place so the next poll's requestHeaders() carries the new id.
 -- ---------------------------------------------------------------------------
-local studioId: string = (function(): string
-    local okGet, stored = pcall(function() return plugin:GetSetting(STUDIO_ID_KEY) end)
-    if okGet and typeof(stored) == "string" and stored ~= "" then
-        return stored
-    end
-    local minted = HttpService:GenerateGUID(false)
-    pcall(function() plugin:SetSetting(STUDIO_ID_KEY, minted) end)
-    return minted
-end)()
+-- Per-window identity: mint a FRESH id on every plugin load and never reuse a
+-- persisted one for routing. plugin:SetSetting is per-plugin USER-GLOBAL (shared
+-- by every Studio window on the machine), so persisting+reusing the id made all
+-- windows send the same x-studio-id → the broker saw them as ONE contested studio
+-- and could not address them separately. Minting fresh per load gives each window
+-- a unique id from its first poll. `studioId` stays a mutable upvalue so the
+-- (now dormant) __assign_studio_id handler can still reassign it in place.
+local studioId: string = HttpService:GenerateGUID(false)
 
 -- Advisory display label (never a routing key): game name + short id suffix.
 local studioLabel: string = (function(): string
