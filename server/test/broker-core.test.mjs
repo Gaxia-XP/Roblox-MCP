@@ -431,6 +431,9 @@ test("POST /studio/pair binds, switches, unpairs (session_id:null), errors on un
   const { port, registry, close } = await startCore({ authToken: "s3cret" });
   const H = { "x-studio-id": "5701d001", "x-mcp-token": "s3cret" };
   try {
+    const noTok = await req(port, { method: "POST", path: "/studio/pair", headers: { "x-studio-id": "5701d001" }, body: JSON.stringify({ session_id: "sess-A" }) });
+    assert.equal(noTok.status, 401);
+
     registry.upsertStudio({ studioId: "5701d001", label: "Win", connId: 1, legacy: false });
     registry.upsertSession({ sessionId: "sess-A", label: "A", pid: 1 });
     registry.upsertSession({ sessionId: "sess-B", label: "B", pid: 2 });

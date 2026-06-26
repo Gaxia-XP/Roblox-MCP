@@ -504,12 +504,12 @@ export function createBrokerCore({
       const you = registry.getStudio(studioId);
       sendJson(res, 200, {
         ok: true,
-        you: { studio_id: studioId, paired_session_id: you?.pairedSessionId || null },
+        you: { studio_id: studioId, paired_session_id: you?.pairedSessionId ?? null },
         sessions: snap.sessions
           .filter((s) => s.live)
           .map((s) => ({
             session_id: s.sessionId, label: s.label,
-            paired_studio_id: s.pairedStudioId || null, live: s.live,
+            paired_studio_id: s.pairedStudioId ?? null, live: s.live,
           })),
       });
       return;
