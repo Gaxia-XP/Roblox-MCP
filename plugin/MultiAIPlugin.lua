@@ -3239,12 +3239,179 @@ local function controlLoop()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Session picker dock panel
+-- A DockWidgetPluginGui listing the broker's live Claude sessions. Click a row to
+-- pair THIS window to that session (POST /studio/pair); the active pairing is
+-- highlighted; clicking the active row disconnects. Polls GET /studio/sessions on
+-- its own ~1.5s timer (only while the panel is open), independent of the command
+-- and control loops.
+-- ---------------------------------------------------------------------------
+local SESSIONS_POLL_INTERVAL = 1.5
+
+local pickerWidget = plugin:CreateDockWidgetPluginGui(
+    "MultiAISessionPicker",
+    DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, true, 300, 420, 240, 320)
+)
+pickerWidget.Title = "Multi-AI — sessions"
+pickerWidget.Name = "MultiAISessionPicker"
+
+local pickerRoot = Instance.new("Frame")
+pickerRoot.Size = UDim2.fromScale(1, 1)
+pickerRoot.BackgroundColor3 = Color3.fromRGB(46, 46, 46)
+pickerRoot.BorderSizePixel = 0
+pickerRoot.Parent = pickerWidget
+
+local headerLabel = Instance.new("TextLabel")
+headerLabel.Size = UDim2.new(1, -16, 0, 40)
+headerLabel.Position = UDim2.fromOffset(8, 4)
+headerLabel.BackgroundTransparency = 1
+headerLabel.TextXAlignment = Enum.TextXAlignment.Left
+headerLabel.Font = Enum.Font.GothamMedium
+headerLabel.TextSize = 13
+headerLabel.TextColor3 = Color3.fromRGB(235, 235, 235)
+headerLabel.TextWrapped = true
+headerLabel.Text = "this window"
+headerLabel.Parent = pickerRoot
+
+local pickerList = Instance.new("ScrollingFrame")
+pickerList.Size = UDim2.new(1, -8, 1, -52)
+pickerList.Position = UDim2.fromOffset(4, 48)
+pickerList.BackgroundTransparency = 1
+pickerList.BorderSizePixel = 0
+pickerList.ScrollBarThickness = 6
+pickerList.CanvasSize = UDim2.new()
+pickerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+pickerList.Parent = pickerRoot
+
+local pickerLayout = Instance.new("UIListLayout")
+pickerLayout.Padding = UDim.new(0, 6)
+pickerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+pickerLayout.Parent = pickerList
+
+-- POST /studio/pair to bind this window to `sessionId` (or unpair when nil).
+local function pairTo(sessionId: string?)
+    task.spawn(function()
+        local body = HttpService:JSONEncode({ session_id = sessionId })
+        pcall(function()
+            HttpService:PostAsync(
+                SERVER_URL .. "/studio/pair", body,
+                Enum.HttpContentType.ApplicationJson, false, requestHeaders(false)
+            )
+        end)
+    end)
+end
+
+-- Rebuild the row list from a /studio/sessions response.
+local function renderSessions(data)
+    headerLabel.Text = `{studioLabel}  ·  #{string.sub(studioId, 1, 4)}`
+    for _, child in pickerList:GetChildren() do
+        if not child:IsA("UIListLayout") then child:Destroy() end
+    end
+    local you = data.you or {}
+    local sessions = data.sessions or {}
+    for i, session in sessions do
+        local isActive = you.paired_session_id ~= nil and session.session_id == you.paired_session_id
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 40)
+        row.LayoutOrder = i
+        row.AutoButtonColor = true
+        row.BackgroundColor3 = isActive and Color3.fromRGB(24, 96, 165) or Color3.fromRGB(58, 58, 58)
+        row.BorderSizePixel = 0
+        row.Text = ""
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = row
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -82, 1, 0)
+        label.Position = UDim2.fromOffset(10, 0)
+        label.BackgroundTransparency = 1
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 13
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.TextColor3 = Color3.fromRGB(240, 240, 240)
+        label.Text = session.label or session.session_id
+        label.Parent = row
+
+        local state = Instance.new("TextLabel")
+        state.Size = UDim2.new(0, 70, 1, 0)
+        state.Position = UDim2.new(1, -76, 0, 0)
+        state.BackgroundTransparency = 1
+        state.TextXAlignment = Enum.TextXAlignment.Right
+        state.Font = Enum.Font.Gotham
+        state.TextSize = 12
+        if isActive then
+            state.Text = "● active"
+            state.TextColor3 = Color3.fromRGB(180, 220, 255)
+        elseif session.paired_studio_id then
+            state.Text = "in use"
+            state.TextColor3 = Color3.fromRGB(150, 150, 150)
+        else
+            state.Text = "connect"
+            state.TextColor3 = Color3.fromRGB(120, 200, 140)
+        end
+        state.Parent = row
+
+        row.Activated:Connect(function()
+            if isActive then pairTo(nil) else pairTo(session.session_id) end
+        end)
+        row.Parent = pickerList
+    end
+    if #sessions == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Font = Enum.Font.Gotham
+        empty.TextSize = 12
+        empty.TextColor3 = Color3.fromRGB(150, 150, 150)
+        empty.Text = "no sessions connected"
+        empty.Parent = pickerList
+    end
+end
+
+-- Poll GET /studio/sessions only while the panel is open.
+local function sessionsLoop()
+    while running do
+        if pickerWidget.Enabled then
+            local ok, response = pcall(function()
+                return HttpService:GetAsync(SERVER_URL .. "/studio/sessions", true, requestHeaders(false))
+            end)
+            if ok and response and response ~= "" then
+                local decoded
+                local decodeOk = pcall(function() decoded = HttpService:JSONDecode(response) end)
+                if decodeOk and decoded and decoded.ok then
+                    pcall(renderSessions, decoded)
+                end
+            end
+        end
+        task.wait(SESSIONS_POLL_INTERVAL)
+    end
+end
+
+local sessionsButton = toolbar:CreateButton(
+    "Sessions",
+    "Show/hide the Multi-AI session picker",
+    "rbxassetid://83497326633061"
+)
+sessionsButton.ClickableWhenViewportHidden = true
+sessionsButton:SetActive(pickerWidget.Enabled)
+sessionsButton.Click:Connect(function()
+    pickerWidget.Enabled = not pickerWidget.Enabled
+    sessionsButton:SetActive(pickerWidget.Enabled)
+end)
+pickerWidget:GetPropertyChangedSignal("Enabled"):Connect(function()
+    sessionsButton:SetActive(pickerWidget.Enabled)
+end)
+
 local function startPolling()
     if running then return end
     running = true
     setStatusVisual("connecting")
     connectionThread = task.spawn(loop)
     controlThread = task.spawn(controlLoop)
+    task.spawn(sessionsLoop)
 end
 
 local function stopPolling()
