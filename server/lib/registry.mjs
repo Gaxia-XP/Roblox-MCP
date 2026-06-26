@@ -343,7 +343,7 @@ export function createRegistry({
     if (!st) return err("UNKNOWN_TARGET", `no studio ${studioId}`);
     const former = st.pairedSessionId;
     if (former) dissolvePair(former);
-    return { ok: true, detached: former != null, former_session_id: former || null };
+    return { ok: true, detached: former !== null, former_session_id: former || null };
   }
 
   // ── resolveTarget (spec §5.4): explicit > bound > auto > NO_TARGET ──

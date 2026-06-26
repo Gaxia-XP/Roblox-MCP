@@ -250,6 +250,7 @@ test("pairStudioToSession binds studio→session (origin 'studio') and switches"
   assert.equal(reg.getStudio("stud-1").pairedSessionId, "sess-2");
   assert.equal(reg.getSession("sess-2").pairedStudioId, "stud-1");
   assert.equal(reg.getSession("sess-1").pairedStudioId, null);
+  assert.equal(r2.detached_from, undefined); // switch: sess-2 had no prior studio, so no detached_from
 });
 
 test("pairStudioToSession steals a session held by another studio; reports detached_from", () => {
@@ -274,6 +275,7 @@ test("pairStudioToSession errors on unknown studio / session", () => {
   reg.upsertStudio({ studioId: "stud-1", connId: 1 }, clk.now());
   assert.equal(reg.pairStudioToSession("ghost", "sess-1", clk.now()).code, "UNKNOWN_TARGET");
   assert.equal(reg.pairStudioToSession("stud-1", "ghost", clk.now()).code, "UNKNOWN_SESSION");
+  assert.equal(reg.unpairStudio("ghost", clk.now()).code, "UNKNOWN_TARGET");
 });
 
 test("unpairStudio drops the studio's pairing on both sides", () => {
