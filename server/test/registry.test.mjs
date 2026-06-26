@@ -228,3 +228,68 @@ test("requireExplicitPair:true prevents auto-1:1; default false still auto-pairs
   assert.ok(p, "default registry still auto-pairs 1×1");
   assert.equal(p.origin, "auto");
 });
+
+test("pairStudioToSession binds studio→session (origin 'studio') and switches", () => {
+  const clk = makeClock();
+  const reg = createRegistry({ now: clk.now });
+  reg.upsertSession({ sessionId: "sess-1", pid: 1 }, clk.now());
+  reg.upsertSession({ sessionId: "sess-2", pid: 2 }, clk.now());
+  reg.upsertStudio({ studioId: "stud-1", label: "Win1", connId: 1 }, clk.now());
+
+  const r = reg.pairStudioToSession("stud-1", "sess-1", clk.now());
+  assert.equal(r.ok, true);
+  assert.equal(r.pair.origin, "studio");
+  assert.equal(r.pair.sessionId, "sess-1");
+  assert.equal(r.pair.studioId, "stud-1");
+  assert.equal(reg.getStudio("stud-1").pairedSessionId, "sess-1");
+  assert.equal(reg.getSession("sess-1").pairedStudioId, "stud-1");
+
+  // Switch this window to sess-2 → sess-1 is detached on the studio side.
+  const r2 = reg.pairStudioToSession("stud-1", "sess-2", clk.now());
+  assert.equal(r2.ok, true);
+  assert.equal(reg.getStudio("stud-1").pairedSessionId, "sess-2");
+  assert.equal(reg.getSession("sess-2").pairedStudioId, "stud-1");
+  assert.equal(reg.getSession("sess-1").pairedStudioId, null);
+});
+
+test("pairStudioToSession steals a session held by another studio; reports detached_from", () => {
+  const clk = makeClock();
+  const reg = createRegistry({ now: clk.now });
+  reg.upsertSession({ sessionId: "sess-1", pid: 1 }, clk.now());
+  reg.upsertStudio({ studioId: "stud-1", connId: 1 }, clk.now());
+  reg.upsertStudio({ studioId: "stud-2", connId: 2 }, clk.now());
+  reg.pairStudioToSession("stud-1", "sess-1", clk.now());
+
+  const r = reg.pairStudioToSession("stud-2", "sess-1", clk.now()); // steal
+  assert.equal(r.ok, true);
+  assert.equal(r.detached_from, "stud-1"); // session sess-1's prior studio
+  assert.equal(reg.getStudio("stud-2").pairedSessionId, "sess-1");
+  assert.equal(reg.getStudio("stud-1").pairedSessionId, null);
+  assert.equal(reg.getSession("sess-1").pairedStudioId, "stud-2");
+});
+
+test("pairStudioToSession errors on unknown studio / session", () => {
+  const clk = makeClock();
+  const reg = createRegistry({ now: clk.now });
+  reg.upsertStudio({ studioId: "stud-1", connId: 1 }, clk.now());
+  assert.equal(reg.pairStudioToSession("ghost", "sess-1", clk.now()).code, "UNKNOWN_TARGET");
+  assert.equal(reg.pairStudioToSession("stud-1", "ghost", clk.now()).code, "UNKNOWN_SESSION");
+});
+
+test("unpairStudio drops the studio's pairing on both sides", () => {
+  const clk = makeClock();
+  const reg = createRegistry({ now: clk.now });
+  reg.upsertSession({ sessionId: "sess-1", pid: 1 }, clk.now());
+  reg.upsertStudio({ studioId: "stud-1", connId: 1 }, clk.now());
+  reg.pairStudioToSession("stud-1", "sess-1", clk.now());
+
+  const u = reg.unpairStudio("stud-1", clk.now());
+  assert.equal(u.detached, true);
+  assert.equal(u.former_session_id, "sess-1");
+  assert.equal(reg.getStudio("stud-1").pairedSessionId, null);
+  assert.equal(reg.getSession("sess-1").pairedStudioId, null);
+
+  const u2 = reg.unpairStudio("stud-1", clk.now()); // idempotent
+  assert.equal(u2.detached, false);
+  assert.equal(u2.former_session_id, null);
+});

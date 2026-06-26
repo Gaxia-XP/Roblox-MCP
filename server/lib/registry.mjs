@@ -322,6 +322,30 @@ export function createRegistry({
     return { ok: true, freed: { studio_id: studioId, former_session_id: former || null } };
   }
 
+  // ── Studio-initiated pairing (plugin dock panel) ──
+  // The plugin (a studio) chooses its session. Unlike pair() — session-initiated,
+  // refuses a busy studio with STUDIO_BUSY — picking from the panel ALWAYS switches:
+  // bindPair detaches any prior pair on BOTH sides, so "pick X" steals X from
+  // whatever window held it (that window falls back to its picker). origin
+  // "studio" surfaces in list_studios pairs alongside "auto"/"manual".
+  function pairStudioToSession(studioId, sessionId, t = now()) {
+    if (!studios.get(studioId)) return err("UNKNOWN_TARGET", `no studio ${studioId}`);
+    if (!sessions.get(sessionId)) return err("UNKNOWN_SESSION", `no session ${sessionId}`);
+    touchSession(sessionId, t);
+    const { pr, detached_from } = bindPair(sessionId, studioId, t, "studio");
+    return { ok: true, pair: pr, ...(detached_from ? { detached_from } : {}) };
+  }
+
+  // Drop this studio's current pairing (panel "disconnect"). Reuses dissolvePair
+  // on the studio's paired session so both sides + the pairs cache clear.
+  function unpairStudio(studioId, t = now()) {
+    const st = studios.get(studioId);
+    if (!st) return err("UNKNOWN_TARGET", `no studio ${studioId}`);
+    const former = st.pairedSessionId;
+    if (former) dissolvePair(former);
+    return { ok: true, detached: former != null, former_session_id: former || null };
+  }
+
   // ── resolveTarget (spec §5.4): explicit > bound > auto > NO_TARGET ──
   function resolveTarget(sessionId, explicitTarget, t = now()) {
     touchSession(sessionId, t);
@@ -434,7 +458,7 @@ export function createRegistry({
     // resolution
     resolveStudioRef, resolveTarget, maybeAutoPair,
     // pairing
-    pair, unpair, attach, detach, detachStudio,
+    pair, unpair, attach, detach, detachStudio, pairStudioToSession, unpairStudio,
     // claims
     acquireClaim, releaseClaim, getActiveClaim, enqueueGate,
     // advanced
