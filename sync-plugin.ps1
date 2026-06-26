@@ -16,7 +16,7 @@ if (-not (Test-Path $src)) {
 $token = $env:ROBLOX_MCP_TOKEN
 if ([string]::IsNullOrEmpty($token)) {
     if ($env:ROBLOX_MCP_ALLOW_TOKENLESS -eq "1") {
-        # Operator opted out of machine-token auth — the broker's loadOrMintMachineToken
+        # Operator opted out of machine-token auth - the broker's loadOrMintMachineToken
         # returns "" under this flag, so bake an empty AUTH_TOKEN to match (no auth).
         $token = ""
     } else {
@@ -43,7 +43,7 @@ Write-Host "  -> $dst" -ForegroundColor DarkGray
 if ($token -ne "") {
     Write-Host "[OK] Baked AUTH_TOKEN into plugin (machine-token auth ENABLED)" -ForegroundColor Green
 } else {
-    Write-Host "[WARN] No token found — plugin installed WITHOUT auth (start the broker once, then re-run to bake the machine token)" -ForegroundColor Yellow
+    Write-Host "[WARN] No token found - plugin installed WITHOUT auth (start the broker once, then re-run to bake the machine token)" -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Next: In Roblox Studio, click Plugins tab -> right-click MultiAIPlugin -> Reload" -ForegroundColor Yellow
