@@ -33,7 +33,17 @@ if ([string]::IsNullOrEmpty($token)) { $token = "" }
 $content = Get-Content -Path $src -Raw
 $escaped = $token.Replace('\', '\\').Replace('"', '\"')
 $content = $content -replace '(?m)^(local AUTH_TOKEN = ")[^"]*(")', "local AUTH_TOKEN = `"$escaped`""
-Set-Content -Path $dst -Value $content -Encoding utf8 -NoNewline
+# Write UTF-8 WITHOUT a BOM. PowerShell 5.1's `Set-Content -Encoding utf8` prepends a
+# UTF-8 BOM (EF BB BF), which Luau rejects at parse time ("got Unicode character U+feff")
+# so the plugin fails to load. .NET's UTF8Encoding($false) emits no BOM.
+[System.IO.File]::WriteAllText($dst, $content, (New-Object System.Text.UTF8Encoding($false)))
+
+# Guard: never ship a BOM again (this script has regressed on output encoding before).
+$head = [System.IO.File]::ReadAllBytes($dst)
+if ($head.Length -ge 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) {
+    Write-Host "[ERROR] Output has a UTF-8 BOM - Luau will reject it. Aborting." -ForegroundColor Red
+    exit 1
+}
 
 $size = (Get-Item $dst).Length
 Write-Host "[OK] Synced plugin ($size bytes)" -ForegroundColor Green
