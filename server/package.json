@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "main": "server.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4"
   }

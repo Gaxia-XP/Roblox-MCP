@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { toInt, sanitizeRegion, coerceMcpValue, coerceProps, toolTimeoutMs } from "./lib/helpers.mjs";
 
 // ---------------------------------------------------------------------------
 // Shared command queue
@@ -302,50 +303,8 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 // ---------------------------------------------------------------------------
-// MCP value coercion
-// Some tools (set_property, set_attribute, tween_property, ...) accept an
-// arbitrary `value`/`goal` field with no JSON Schema type (because the value
-// can be a number, string, boolean, Vector3 list, Color3 list, UDim2 list,
-// etc.). Some MCP clients stringify such untyped values when they're lists.
-// We detect that here and JSON-parse anything that obviously looks like a
-// list or object literal. Already-typed values pass through unchanged.
+// MCP tool handler
 // ---------------------------------------------------------------------------
-
-function coerceMcpValue(v) {
-  if (typeof v !== "string" || v.length < 2) return v;
-  const first = v[0];
-  if (first !== "[" && first !== "{") return v;
-  try { return JSON.parse(v); } catch { return v; }
-}
-
-// Coerce every value inside a property dict. Used by tools that accept a
-// `{ propName: value, ... }` map (create_instance.properties, tween_multi.properties).
-function coerceProps(obj) {
-  if (!obj || typeof obj !== "object") return obj;
-  const out = {};
-  for (const [k, v] of Object.entries(obj)) out[k] = coerceMcpValue(v);
-  return out;
-}
-
-// Force a value to a bounded integer. OS-level tools (screenshots / input)
-// interpolate numbers into PowerShell scripts, so any numeric arg that reaches
-// them MUST be a plain integer — never an attacker-typed string. Defense in
-// depth alongside the clamps inside os-tools.mjs.
-function toInt(v, def, { min = 0, max = 1_000_000 } = {}) {
-  const n = Math.trunc(Number(v));
-  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
-}
-
-// Sanitize a screenshot region object into integer-only fields (or null).
-function sanitizeRegion(region) {
-  if (!region || typeof region !== "object") return null;
-  return {
-    x: toInt(region.x, 0, { min: -100_000 }),
-    y: toInt(region.y, 0, { min: -100_000 }),
-    width: toInt(region.width, 0, { min: 0 }),
-    height: toInt(region.height, 0, { min: 0 }),
-  };
-}
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params;
@@ -849,35 +808,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 });
 
-// Per-tool wall-clock timeout. Tools that forward their own `timeout`/`duration`
-// to the plugin get that budget + slack; everything else uses the 30s default.
-function toolTimeoutMs(name, args) {
-  const SLACK_MS = 15_000;
-  const secs = (v, def) => {
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : def;
-  };
-  let budget;
-  switch (name) {
-    case "run_script_in_play_mode":
-    case "npc_walk_path":
-      budget = secs(args.timeout, 30) * 1000 + SLACK_MS;
-      break;
-    case "profile_play_mode":
-      budget = secs(args.duration, 10) * 1000 + SLACK_MS;
-      break;
-    case "humanoid_move":
-      // The plugin may wait up to wait_for_character TWICE (player join, then
-      // character/Humanoid/HRP spawn) before driving for `duration`. Budget all three.
-      budget = (secs(args.duration, 1) + 2 * secs(args.wait_for_character, 10)) * 1000 + SLACK_MS;
-      break;
-    default:
-      budget = DEFAULT_TIMEOUT_MS;
-  }
-  // A per-tool budget may only EXTEND the default wall, never shorten it — so a
-  // new/under-counted case can't make a tool time out earlier than before.
-  return Math.max(DEFAULT_TIMEOUT_MS, budget);
-}
+// ---------------------------------------------------------------------------
+// Connect MCP transport
+// ---------------------------------------------------------------------------
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
