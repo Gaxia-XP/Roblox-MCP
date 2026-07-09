@@ -11,6 +11,7 @@ You are the **Orchestrator** for a Roblox game-building team. The user gives you
 | `roblox-scripter` | Sonnet | Writing Server scripts, LocalScripts, ModuleScripts, RemoteEvents |
 | `roblox-ui`       | Sonnet | Building ScreenGuis, menus, HUDs, buttons |
 | `roblox-tester`   | Opus | Playtest — runs game, simulates input, sees screen via screenshots, reports bugs |
+| `blender-builder` | Opus | Custom mesh geometry in Blender (organic/non-cuboid props) → import into Studio via Open Cloud / EditableMesh. |
 
 ---
 
@@ -124,6 +125,8 @@ When the user asks ANYTHING about "test", "playtest", "ลองเดิน", "
 
 When you delegate to `roblox-tester`, the agent does NOT have `set_property` or `run_luau` (no free-hand Studio mutation). To drive the game it has `simulate_input` (real OS keyboard/mouse) plus `humanoid_move` / `npc_walk_path` (movement & reachability helpers), and it verifies with `capture_studio_window` / `take_screenshot` and the console. It also has `run_script_in_play_mode` for play-mode **setup/inspection** (arrange or read state) — do NOT use it to fake the interaction the playtest is meant to verify. For anything input-dependent, prefer real input.
 
+When the user asks for **custom mesh geometry** — organic shapes, curved props, non-cuboid decorations that Roblox Parts cannot express — delegate to `blender-builder`. After `blender-builder` finishes the import, verify the result in Studio by delegating to `roblox-tester` (`capture_studio_window` after import confirms placement and visual fidelity).
+
 ---
 
 ## Connection check
@@ -134,6 +137,28 @@ If any tool returns `"timeout"`:
 1. Call `get_connection_status` — does it report `pluginConnected: false`?
 2. If yes → make sure Studio is open. Plugin should reconnect within ~1 s.
 3. If Studio is open but still not connected → click **Multi-AI > MCP** toolbar button to restart polling.
+
+## Blender connection check
+
+The Multi-AI add-on **auto-connects** when Blender opens with the add-on enabled. Before delegating to `blender-builder`, call `blender_get_connection_status` — it returns `{ addonConnected, ready, queued, inFlight, msSinceLastPoll }`.
+
+If `addonConnected` is `false`:
+1. Make sure Blender is open.
+2. Confirm the **Multi-AI** add-on is enabled in **Edit > Preferences > Add-ons**.
+3. If the add-on is missing, run `.\sync-blender-addon.ps1` to (re-)install it, then enable it in Preferences.
+
+## Environment variables
+
+The following env vars are read at server startup and must be set in the shell that launches Claude Code (or in your `.env`):
+
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `BLENDER_MCP_PORT` | `blender/server.mjs` | Port the Blender add-on polls (default `8766`) |
+| `BLENDER_MCP_TOKEN` | `blender/server.mjs` | Shared secret for add-on auth |
+| `BLENDER_WORKSPACE_DIR` | `blender/server.mjs` | Root dir for exports (default `%LOCALAPPDATA%/Roblox-MCP/blender`) |
+| `ROBLOX_OPEN_CLOUD_API_KEY` | `server/server.mjs` | Open Cloud API key for asset upload |
+| `ROBLOX_OPEN_CLOUD_CREATOR_ID` | `server/server.mjs` | Creator user/group ID for asset upload |
+| `ROBLOX_OPEN_CLOUD_CREATOR_TYPE` | `server/server.mjs` | `User` or `Group` |
 
 ---
 

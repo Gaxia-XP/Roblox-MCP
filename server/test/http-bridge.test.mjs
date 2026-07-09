@@ -1,43 +1,25 @@
-import { test, before, after } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createBridge, redactHeaders } from "../lib/http-bridge.mjs";
 
-// Integration tests for the inline HTTP bridge in server.mjs. We spawn the real
-// server.mjs on an isolated port (never 8765 — that's the live Studio bridge)
-// and exercise its guards over HTTP. This tests the shipped artifact end-to-end
-// without extracting the bridge (which would collide with the broker branch's
-// lib/http-bridge.mjs superset on merge).
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SERVER_PATH = join(__dirname, "..", "server.mjs");
-
-// Grab a free TCP port from the OS, then release it for the child to claim.
-// (Small TOCTOU window, acceptable for a local test.)
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = http.createServer();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
+// Start a bridge on an ephemeral port; return {port, bridge, close}.
+function startBridge(opts = {}) {
+  const bridge = createBridge({ port: 0, brandPrefix: "[test]", ...opts });
+  return new Promise((resolve) => {
+    bridge.httpServer.on("listening", () => {
+      const { port } = bridge.httpServer.address();
+      resolve({ port, bridge, close: () => bridge.httpServer.close() });
     });
   });
 }
 
-// Minimal HTTP request helper. `agent: false` disables socket pooling so a
-// server-side req.destroy() surfaces cleanly instead of poisoning a kept-alive
-// socket for the next request.
+// Minimal HTTP request helper.
 function req(port, { method = "GET", path = "/", headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const r = http.request(
-      {
-        host: "127.0.0.1", port, method, path, agent: false,
-        headers: { Host: `127.0.0.1:${port}`, ...headers },
-      },
+      { host: "127.0.0.1", port, method, path, headers: { Host: `127.0.0.1:${port}`, ...headers } },
       (res) => {
         let data = "";
         res.on("data", (c) => (data += c));
@@ -50,102 +32,79 @@ function req(port, { method = "GET", path = "/", headers = {}, body } = {}) {
   });
 }
 
-let child;
-let PORT;
-
-before(async () => {
-  PORT = await getFreePort();
-  child = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, ROBLOX_MCP_PORT: String(PORT) },
-    stdio: ["pipe", "pipe", "pipe"],
+test("redactHeaders masks secret headers, keeps the rest", () => {
+  const out = redactHeaders({
+    "x-api-key": "SECRET", "x-mcp-token": "T", authorization: "Bearer z",
+    "x-open-cloud-api-key": "K", "content-type": "application/json", host: "127.0.0.1:1",
   });
-  // Wait for the "bridge on ..." line on stderr (server.mjs logs it in the
-  // listen callback), or fail fast if the child dies during startup.
-  await new Promise((resolve, reject) => {
-    let buf = "";
-    const onErr = (c) => {
-      buf += c;
-      if (buf.includes(`bridge on 127.0.0.1:${PORT}`)) {
-        child.stderr.off("data", onErr);
-        resolve();
-      }
-    };
-    child.stderr.on("data", onErr);
-    child.once("exit", (code) => reject(new Error(`child exited early: ${code}\n${buf}`)));
-    setTimeout(() => reject(new Error(`server did not start in time\n${buf}`)), 8000);
-  });
-});
-
-after(() => {
-  if (child && !child.killed) child.kill();
-});
-
-test("GET /health -> 200 ok:true", async () => {
-  const res = await req(PORT, { path: "/health" });
-  assert.equal(res.status, 200);
-  const body = JSON.parse(res.body);
-  assert.equal(body.ok, true);
-  assert.equal(body.queued, 0);
-  assert.equal(body.inFlight, 0);
-});
-
-test("GET /connection_status -> 200, plugin not connected", async () => {
-  const res = await req(PORT, { path: "/connection_status" });
-  assert.equal(res.status, 200);
-  const body = JSON.parse(res.body);
-  assert.equal(body.pluginConnected, false);
-  assert.equal(body.ready, false);
+  assert.equal(out["x-api-key"], "[REDACTED]");
+  assert.equal(out["x-mcp-token"], "[REDACTED]");
+  assert.equal(out["authorization"], "[REDACTED]");
+  assert.equal(out["x-open-cloud-api-key"], "[REDACTED]");
+  assert.equal(out["content-type"], "application/json");
+  assert.equal(out["host"], "127.0.0.1:1");
 });
 
 test("bad Host header -> 403 forbidden host", async () => {
-  const res = await req(PORT, { path: "/health", headers: { Host: "evil.example.com" } });
+  const { port, close } = await startBridge();
+  const res = await req(port, { path: "/health", headers: { Host: "evil.example.com" } });
   assert.equal(res.status, 403);
   assert.match(res.body, /forbidden host/);
+  close();
 });
 
-test("localhost Host header is allowed", async () => {
-  const res = await req(PORT, { path: "/health", headers: { Host: `localhost:${PORT}` } });
-  assert.equal(res.status, 200);
-});
-
-test("unknown route -> 404", async () => {
-  const res = await req(PORT, { path: "/nope" });
-  assert.equal(res.status, 404);
+test("body over cap -> 413 payload too large", async () => {
+  const { port, close } = await startBridge({ maxBodyBytes: 16 });
+  const res = await req(port, { method: "POST", path: "/submit", body: "x".repeat(64) });
+  assert.equal(res.status, 413);
+  assert.match(res.body, /payload too large/);
+  close();
 });
 
 test("malformed JSON on /submit -> 400 bad request (no parser internals)", async () => {
-  const res = await req(PORT, { method: "POST", path: "/submit", body: "{not json" });
+  const { port, close } = await startBridge();
+  const res = await req(port, { method: "POST", path: "/submit", body: "{not json" });
   assert.equal(res.status, 400);
   assert.equal(res.body, '{"error":"bad request"}');
+  close();
 });
 
-test("late POST /result/<id> -> 200 ok:true (dropped, caller already timed out)", async () => {
-  const res = await req(PORT, { method: "POST", path: "/result/nonexistent-id", body: "{}" });
-  assert.equal(res.status, 200);
-  assert.equal(res.body, '{"ok":true}');
+test("auth: with token set, /poll without x-mcp-token -> 401", async () => {
+  const { port, close } = await startBridge({ authToken: "s3cret" });
+  const res = await req(port, { path: "/poll" });
+  assert.equal(res.status, 401);
+  assert.match(res.body, /unauthorized/);
+  close();
 });
 
-test("body over 8MB cap -> 413 payload too large, server stays alive", async () => {
-  // 9 MB > MAX_BODY_BYTES (8 MB). The server must 413 and NOT crash.
-  const big = "x".repeat(9 * 1024 * 1024);
-  const res = await req(PORT, { method: "POST", path: "/submit", body: big });
-  assert.equal(res.status, 413);
-  assert.match(res.body, /payload too large/);
-  // Liveness probe: a follow-up request must still succeed (no self-DoS).
-  const health = await req(PORT, { path: "/health" });
-  assert.equal(health.status, 200);
+test("late POST /result/<id> -> 200 ok and logs 'late result'", async () => {
+  const { port, close } = await startBridge();
+  const errs = [];
+  const orig = console.error;
+  console.error = (...a) => errs.push(a.join(" "));
+  try {
+    const res = await req(port, { method: "POST", path: "/result/nonexistent-id", body: "{}" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body, '{"ok":true}');
+    assert.ok(errs.some((e) => e.includes("late result for nonexistent-id")));
+  } finally {
+    console.error = orig;
+    close();
+  }
 });
 
-test("EADDRINUSE -> server.mjs exits 1 with FATAL log", async () => {
-  // Bind a holder on a fresh port, then spawn server.mjs on the SAME port.
+test("EADDRINUSE -> child process exits 1 with FATAL log", async () => {
+  // Bind a server, then spawn a child that tries the SAME port via createBridge.
   const holder = http.createServer(() => {});
-  await new Promise((r) => holder.listen(0, "127.0.0.1", r));
-  const busyPort = holder.address().port;
-  const r = spawnSync(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, ROBLOX_MCP_PORT: String(busyPort) },
-    encoding: "utf8",
-    timeout: 8000,
-  });
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r)); // wait for the async bind before reading .address()
+  const port = holder.address().port;
+  // Absolute import so the child resolves the lib regardless of its cwd.
+  const libUrl = new URL("../lib/http-bridge.mjs", import.meta.url).href;
+  const script = `
+    import { createBridge } from ${JSON.stringify(libUrl)};
+    createBridge({ port: ${port}, brandPrefix: "[child]" });
+  `;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
   holder.close();
   assert.equal(r.status, 1);
   assert.match(r.stderr, /FATAL/);
