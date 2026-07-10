@@ -125,7 +125,7 @@ When the user asks ANYTHING about "test", "playtest", "ลองเดิน", "
 
 When you delegate to `roblox-tester`, the agent does NOT have `set_property` or `run_luau` (no free-hand Studio mutation). To drive the game it has `simulate_input` (real OS keyboard/mouse) plus `humanoid_move` / `npc_walk_path` (movement & reachability helpers), and it verifies with `capture_studio_window` / `take_screenshot` and the console. It also has `run_script_in_play_mode` for play-mode **setup/inspection** (arrange or read state) — do NOT use it to fake the interaction the playtest is meant to verify. For anything input-dependent, prefer real input.
 
-When the user asks for **custom mesh geometry** — organic shapes, curved props, non-cuboid decorations that Roblox Parts cannot express — delegate to `blender-builder`. After `blender-builder` finishes the import, verify the result in Studio by delegating to `roblox-tester` (`capture_studio_window` after import confirms placement and visual fidelity).
+When the user asks for **custom mesh geometry** — organic shapes, curved props, non-cuboid decorations that Roblox Parts cannot express — delegate to `blender-builder`. The builder uses bmesh primitives + modifiers for standard geometry, or `blender_execute_python` for advanced operations (UV unwrap, image textures, procedural generation, node graphs). After `blender-builder` finishes the import, verify the result in Studio by delegating to `roblox-tester` (`capture_studio_window` after import confirms placement and visual fidelity).
 
 ---
 

@@ -276,6 +276,35 @@ def h_save_as(p):
     bpy.ops.wm.save_as_mainfile(filepath=p["path"])
     return {"ok": True, "path": p["path"]}
 
+def h_execute_python(p):
+    import sys
+    from io import StringIO
+    code = p["code"]
+    # Security: block dangerous builtins
+    BLOCKED = {"os", "subprocess", "sys", "eval", "compile", "__import__"}
+    for banned in BLOCKED:
+        if banned in code:
+            return {"ok": False, "error": f"Blocked module/builtin: {banned}"}
+    # Capture stdout
+    old_stdout = sys.stdout
+    sys.stdout = capture = StringIO()
+    try:
+        # Execute in a controlled namespace with safe modules
+        namespace = {
+            "bpy": bpy,
+            "bmesh": bmesh,
+            "mathutils": __import__("mathutils"),
+            "math": math,
+            "Vector": Vector,
+        }
+        exec(code, namespace)
+        output = capture.getvalue()
+        return {"ok": True, "output": output}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        sys.stdout = old_stdout
+
 HANDLERS = {
     "blender_create_primitive": h_create_primitive,
     "blender_set_transform": h_set_transform,
@@ -291,10 +320,11 @@ HANDLERS = {
     "blender_export_to_roblox": h_export_to_roblox,
     "blender_undo": h_undo,
     "blender_save_as": h_save_as,
+    "blender_execute_python": h_execute_python,
 }
 
 # ── Main-thread drain (timer) ─────────────────────────────────────────────────
-READ_ONLY = {"blender_get_tree", "blender_get_bounds", "blender_screenshot"}
+READ_ONLY = {"blender_get_tree", "blender_get_bounds", "blender_screenshot", "blender_execute_python"}
 
 def _drain():
     try:

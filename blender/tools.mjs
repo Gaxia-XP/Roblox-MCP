@@ -53,4 +53,16 @@ export const BLENDER_TOOLS = [
     inputSchema: { type: "object", properties: { target: { type: "string" }, path: { type: "string" }, format: { type: "string", enum: ["glb", "fbx", "obj"], default: "glb" }, max_triangles: { type: "integer", default: 10000 } }, required: ["target", "path"] } },
   { name: "blender_undo", description: "bpy.ops.ed.undo().", inputSchema: { type: "object", properties: {} } },
   { name: "blender_save_as", description: "Save the .blend to path (only allowlisted wm operator).", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+  {
+    name: "blender_execute_python",
+    description: "Execute arbitrary Python code in Blender. Returns print() output. Has access to bpy, bmesh, mathutils, math. Runs in Blender's main thread with bpy.context access. Security: blocks os, subprocess, sys, eval, compile, __import__.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "Python code to execute" },
+        timeout_ms: { type: "integer", default: 30000, description: "Execution timeout in milliseconds" },
+      },
+      required: ["code"],
+    },
+  },
 ];
