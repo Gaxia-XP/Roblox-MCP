@@ -1,6 +1,8 @@
 // server/tools.mjs — MCP tool definitions (extracted from server.mjs)
 // All tool schemas live here; server.mjs imports { TOOLS } from this module.
-export const TOOLS = [
+import { CONTROL_OR_OS_LOCAL } from "./lib/dispatch-routing.mjs";
+export { CONTROL_OR_OS_LOCAL };
+const RAW_TOOLS = [
   {
     name: "run_luau",
     description:
@@ -1160,3 +1162,94 @@ export const TOOLS = [
     inputSchema: { type: "object", properties: { local_path: { type: "string" }, parent_path: { type: "string", default: "Workspace" }, name: { type: "string" } }, required: ["local_path"] },
   },
 ];
+
+// ── Per-call studio_target injection (design §6.5, BINDING CORRECTION C1) ─
+// Every plugin-routed ("data") tool may carry an optional `studio_target` to
+// route the call to a specific Studio in a multi-studio session. The routing
+// key is `studio_target` — NEVER `target`, which is already a REQUIRED DOMAIN
+// parameter on play_animation, stop_animations, align_to, create_particle_burst.
+// Those four tools correctly keep their own `target` AND additionally gain
+// `studio_target`. The CONTROL_OR_OS_LOCAL set (imported from dispatch-routing.mjs,
+// size 9) is the injection skip-set: control-plane + OS-local tools never get
+// `studio_target` because they are answered in-process, never routed to a plugin.
+// `studio_target` is always OPTIONAL — never appended to any tool's `required[]`.
+const STUDIO_TARGET_PROP = {
+  studio_target: {
+    type: "string",
+    description:
+      "Optional studioId or studio label to route THIS call to a specific Studio. " +
+      "Omit to use your attached/auto-paired studio.",
+  },
+};
+
+function injectStudioTarget(tool) {
+  if (CONTROL_OR_OS_LOCAL.has(tool.name)) return tool;
+  const schema = tool.inputSchema ?? { type: "object", properties: {} };
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: { ...(schema.properties ?? {}), ...STUDIO_TARGET_PROP },
+    },
+  };
+}
+
+// ── Control-plane tool definitions (design §6.4) ───────────────────────────
+// Named CONTROL_TOOL_DEFS (not CONTROL_TOOLS — that name is already a Set
+// exported by dispatch-routing.mjs; avoid the collision).
+// Each is answered by server.mjs from broker endpoints, never sent to a plugin,
+// so none of them gets a `studio_target` property (they are in CONTROL_OR_OS_LOCAL).
+const CONTROL_TOOL_DEFS = [
+  {
+    name: "list_studios",
+    description:
+      "List every Studio, session, pair, and claim the broker knows about (multi-studio coordination). " +
+      "Each studio reports its label, paired session (with `origin: \"auto\"|\"manual\"`), and `attachedSessions`. " +
+      "Read-only; never blocked by a busy or claimed studio. Use this to discover routing targets before `attach_studio` or a per-call `studio_target`.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "attach_studio",
+    description:
+      "Sticky-pair THIS session to a Studio (the manual half of auto-1:1), optionally taking a claim. " +
+      "`target` is a studioId or studio label (id-exact > exact label > case-insensitive substring). " +
+      "Optional `claim`: `mode:\"soft\"` (advisory, warns others) or `\"exclusive\"` (blocks other sessions' data commands until released/expired). " +
+      "Attaching onto a Studio already paired to another session returns `STUDIO_BUSY` (no steal — use `detach_studio` admin form first).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "studioId or studio label to attach to." },
+        claim: {
+          type: "object",
+          description: "Optional concurrency claim on the studio.",
+          properties: {
+            mode: { type: "string", enum: ["soft", "exclusive"], description: "soft = advisory warning; exclusive = blocks other sessions." },
+            label: { type: "string", description: "Human label for who/what holds the claim." },
+            ttl_ms: { type: "number", description: "Claim lifetime in ms (default 60000, clamped 5000..600000). Lazily expires." },
+          },
+        },
+      },
+      required: ["target"],
+    },
+  },
+  {
+    name: "detach_studio",
+    description:
+      "Drop THIS session's sticky pairing and release its own claim. With no `target`, detaches the session's current pair (idempotent; does NOT auto-re-pair). " +
+      "With a `target` that names a Studio paired/claimed by ANOTHER session, performs the admin steal — forcibly freeing it (the only way to break another session's pair; explicit).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "Optional studioId or label. Omit to detach your own current pair; pass another session's studio to force-free it." },
+      },
+    },
+  },
+  {
+    name: "session_status",
+    description:
+      "Report THIS session's routing state: which Studio it is paired to (and the pairing `origin`), any claim it holds, and who else is attached to the same Studio. Read-only; the introspection counterpart to `get_connection_status`.",
+    inputSchema: { type: "object", properties: {} },
+  },
+];
+
+export const TOOLS = [...RAW_TOOLS.map(injectStudioTarget), ...CONTROL_TOOL_DEFS];

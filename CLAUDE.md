@@ -138,6 +138,22 @@ If any tool returns `"timeout"`:
 2. If yes → make sure Studio is open. Plugin should reconnect within ~1 s.
 3. If Studio is open but still not connected → click **Multi-AI > MCP** toolbar button to restart polling.
 
+### Broker mode (multi-session)
+
+In `broker` mode (the default) a single long-lived **broker** owns `127.0.0.1:8765` and routes commands from every Claude Code session to the right Studio window. The first session to start hosts the broker in-process; later sessions connect to it. To inspect topology, the orchestrator uses the control tools:
+
+- `list_studios` — every studio + session + pairing (`origin:"auto"|"manual"`) + active claims.
+- `session_status` (alias `whoami`) — what this session is paired to and what it holds.
+- `attach_studio { target, claim? }` / `detach_studio { target? }` — manual pairing when auto-1:1 doesn't fire (≥2 studios or ≥2 sessions).
+
+A single session + single Studio **auto-pairs** with zero config and behaves exactly like the legacy single-session server. Pass `target` (a studioId or label) on any data tool to route one call to a specific studio.
+
+- **Auth is on by default:** the broker auto-mints a machine token; `sync-plugin.ps1` bakes it into the plugin. After the broker's first start, re-run `.\sync-plugin.ps1` so the plugin carries the token, then reload the plugin in Studio.
+- **Rollback:** set `ROBLOX_MCP_MODE=inline` to restore the pre-broker single-session server (binds 8765, fatal on port conflict).
+- **Health probe:** `GET http://127.0.0.1:8765/health` returns `{ ok, role:"broker", proto:1, brokerId }` (no topology counts — those are behind the token-guarded `list_studios`).
+- **Per-window identity + session picker (2026-06-26):** each Studio window mints a **fresh `studio_id` per plugin load** (no longer persisted via the user-global `plugin:SetSetting`), so two windows on one machine are distinct studios from their first poll — the old multi-window *contested* collision no longer arises in normal use. Each window's plugin also carries a **dock panel** (powered by `GET /studio/sessions` + `POST /studio/pair`, token-gated like all `/studio/*`) to pick / switch / disconnect which session drives it (auto-pairs only when 1:1-unambiguous; otherwise shows a picker). Pairing is studio-initiated via `registry.pairStudioToSession` (origin `"studio"`, switch/steal via `bindPair`); N:1 still rides explicit `target`.
+- **Residual v1 note:** the `contested` / `__assign_studio_id` machinery and the `legacy:default`→real `rekeyStudio` path remain as a **dormant safety net / v2 on-ramp** — a `legacy:default` studio still routes but is not auto-rekeyed. Deploying broker changes requires restarting the host process (the Claude session hosting the broker) since Node does not hot-reload; plugin changes require `.\sync-plugin.ps1` + a plugin reload in each Studio window.
+
 ## Blender connection check
 
 The Multi-AI add-on **auto-connects** when Blender opens with the add-on enabled. Before delegating to `blender-builder`, call `blender_get_connection_status` — it returns `{ addonConnected, ready, queued, inFlight, msSinceLastPoll }`.
@@ -159,6 +175,14 @@ The following env vars are read at server startup and must be set in the shell t
 | `ROBLOX_OPEN_CLOUD_API_KEY` | `server/server.mjs` | Open Cloud API key for asset upload |
 | `ROBLOX_OPEN_CLOUD_CREATOR_ID` | `server/server.mjs` | Creator user/group ID for asset upload |
 | `ROBLOX_OPEN_CLOUD_CREATOR_TYPE` | `server/server.mjs` | `User` or `Group` |
+| `ROBLOX_MCP_PORT` | `server/server.mjs` · `server/broker.mjs` | Broker port — single source; FE + broker derive identically (default `8765`) |
+| `ROBLOX_MCP_TOKEN` | broker + FE + plugin | Outer `x-mcp-token`. Unset → broker auto-mints a machine token into `%LOCALAPPDATA%/Roblox-MCP/broker-token` (default ON); `sync-plugin.ps1` bakes it into the plugin's `AUTH_TOKEN`. Set explicitly to override. |
+| `ROBLOX_MCP_MODE` | `server/server.mjs` | `broker` (default, multi-session) or `inline` (one-env rollback to pre-broker single-session behavior) |
+| `ROBLOX_MCP_SESSION_NAME` | `server/server.mjs` | Overrides this session's display label verbatim |
+| `ROBLOX_MCP_BROKER_IDLE_MS` | `server/broker.mjs` | Idle-reap timeout — broker self-exits after this long fully idle (default `90000`) |
+| `ROBLOX_MCP_TARGET` | `server/server.mjs` | Pin one studio (by id/label) for ALL of this session's calls (multi-studio convenience) |
+| `ROBLOX_MCP_ALLOW_TOKENLESS` | `server/broker.mjs` | `=1` restores the legacy empty-outer-gate behavior (opt-out of the machine-token default) |
+| `ROBLOX_MCP_REQUIRE_EXPLICIT_PAIR` | `server/server.mjs` · `server/lib/broker-client.mjs` | `=1` disables silent auto-1:1 pairing; sessions must call `attach_studio` explicitly to pair with a Studio |
 
 ---
 

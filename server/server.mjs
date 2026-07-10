@@ -17,6 +17,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawnSync } from "node:child_process";
 import { createBridge, redactHeaders } from "./lib/http-bridge.mjs";
+import { ensureBroker, loadOrMintMachineToken, loadOrMintSessionId } from "./lib/broker-client.mjs";
+import { routeCall, CONTROL_TOOLS } from "./lib/dispatch-routing.mjs";
 import { uploadAsset, pollOperation } from "./lib/open-cloud.mjs";
 import { tmpdir } from "node:os";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -37,11 +39,71 @@ const HTTP_PORT = (() => {
   return Number.isInteger(p) && p > 0 && p < 65536 ? p : 8765;
 })();
 
-const { submit, getStatus } = createBridge({
-  port: HTTP_PORT,
-  authToken: (process.env.ROBLOX_MCP_TOKEN || "").trim(),
-  brandPrefix: "[roblox-mcp]",
-});
+// ── Session identity + per-session studio pin ──
+// A session is identified by its working directory (per-cwd, persisted by the
+// broker-client helper). Reusing the id on MCP restart preserves an established
+// pairing; different worktrees → different cwd → different sessions.
+const SESSION_ID = loadOrMintSessionId();
+
+// Optional per-session studio pin (mode-2 convenience). Empty → null. Read by the
+// routing chokepoint as the fallback when a call carries no `studio_target`.
+const SESSION_TARGET = (process.env.ROBLOX_MCP_TARGET || "").trim() || null;
+
+// C4: resolve the outer/machine token ONCE so both modes agree on one secret.
+// An explicit ROBLOX_MCP_TOKEN wins; otherwise mint/load the persisted machine
+// token (the same single source the detached broker child uses).
+const OUTER_TOKEN = (process.env.ROBLOX_MCP_TOKEN || "").trim() || loadOrMintMachineToken();
+
+// ROBLOX_MCP_MODE: `inline` = the one-env single-session rollback (today's
+// createBridge); anything else (default) = the multi-session broker.
+const BROKER_MODE = (process.env.ROBLOX_MCP_MODE || "broker").trim().toLowerCase() !== "inline";
+
+// In broker mode the FE is an HTTP client of (or in-proc leader for) the broker.
+// In inline mode it is byte-for-bit today's single-session createBridge server.
+// Both expose `submit(type,payload,timeout)` with the IDENTICAL public signature.
+const bridge = BROKER_MODE
+  ? await ensureBroker({
+      port: HTTP_PORT,
+      host: "127.0.0.1",
+      authToken: OUTER_TOKEN,
+      brandPrefix: "[roblox-mcp]",
+      sessionId: SESSION_ID,
+    })
+  : (() => {
+      // Inline rollback: createBridge returns a SYNC getStatus; wrap it in a
+      // Promise so the single call site can `await getStatus()` uniformly, and
+      // shim the broker-only methods so the chokepoint has one shape. A stray
+      // `studio_target` in inline mode degrades to a plain single-studio submit —
+      // byte-identical to today for the no-target single-session path.
+      const b = createBridge({
+        port: HTTP_PORT,
+        authToken: OUTER_TOKEN,
+        brandPrefix: "[roblox-mcp]",
+      });
+      const noBroker = (op) => ({ error: `${op} requires broker mode (ROBLOX_MCP_MODE=broker)`, code: "INLINE_MODE" });
+      return {
+        httpServer: b.httpServer,
+        submit: b.submit,
+        submitTo: (_studioId, type, payload, timeoutMs) => b.submit(type, payload, timeoutMs),
+        submitControl: (_t, type, payload, timeoutMs) => b.submit(type, payload, timeoutMs),
+        fanoutSubmit: async (type, payload, timeoutMs) => {
+          const r = await b.submit(type, payload, timeoutMs);
+          return { fanout: true, results: [{ studioId: "inline", label: "inline", result: r }], ok: r && r.error ? 0 : 1, failed: r && r.error ? 1 : 0 };
+        },
+        getStatus: async () => b.getStatus(),
+        resolveSessionTarget: async () => ({ ok: true, studioId: "inline", via: "inline" }),
+        listStudios: async () => noBroker("list_studios"),
+        attachStudio: async () => noBroker("attach_studio"),
+        detachStudio: async () => noBroker("detach_studio"),
+        sessionStatus: async () => noBroker("session_status"),
+        stopHeartbeat: () => {},
+      };
+    })();
+
+const {
+  submit, submitTo, submitControl, fanoutSubmit, resolveSessionTarget, getStatus,
+  listStudios, attachStudio, detachStudio, sessionStatus,
+} = bridge;
 
 // ---------------------------------------------------------------------------
 // MCP tools
@@ -67,7 +129,10 @@ const EM_VERT_BATCH = 4000; // triangles ride the final vertex batch (see note);
 // so it has no access to the local `jsonResult` — it builds the content shape itself.
 const emResult = (v) => ({ content: [{ type: "text", text: JSON.stringify(v, null, 2) }] });
 
-async function importViaEditableMesh(args) {
+// `submitFn(type,payload,timeoutMs)` is pre-pinned to ONE studio by the caller so
+// every batch of a single mesh lands on the same Studio (a mid-sequence re-pair
+// cannot split a mesh across two studios). Defaults to the global `submit`.
+async function importViaEditableMesh(args, submitFn = submit) {
   let mesh;
   try {
     mesh = parseGlb(await readFile(args.local_path));
@@ -88,7 +153,7 @@ async function importViaEditableMesh(args) {
   let last;
   for (let v = 0; v < mesh.vertices.length; v += EM_VERT_BATCH) {
     const isLastVertBatch = v + EM_VERT_BATCH >= mesh.vertices.length;
-    last = await submit("editable_mesh_build", {
+    last = await submitFn("editable_mesh_build", {
       sessionId,
       name: args.name || "BlenderMesh",
       parent: args.parent_path || "Workspace",
@@ -193,8 +258,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   // get_connection_status answers from server state — never reaches plugin
   if (name === "get_connection_status") {
-    const status = getStatus();
+    const status = await getStatus();
     return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+  }
+
+  // ── Control-plane tools — answered by the broker client, never a plugin ──
+  if (name === "list_studios") {
+    return jsonResult(await listStudios());
+  }
+  if (name === "attach_studio") {
+    return jsonResult(await attachStudio(args.target, args.claim));
+  }
+  if (name === "detach_studio") {
+    return jsonResult(await detachStudio(args.target));
+  }
+  if (name === "session_status") {
+    return jsonResult(await sessionStatus());
   }
 
   if (name === "roblox_upload_asset") {
@@ -235,7 +314,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return jsonResult({ ok: false, via: "open_cloud", error: String(e.message || e) });
       }
     }
-    return await importViaEditableMesh(args); // EditableMesh fallback (Task 7) — builds its own content shape
+    // ── C7d: composite studio-pinning is handled HERE (upstream early-return),
+    // NOT in the routeCall chokepoint switch. import_blender_model fans out many
+    // editable_mesh_build submits that MUST all land on ONE studio, so we resolve
+    // the studio ONCE and pin every batch to it. If this early-return is ever
+    // removed, re-add pin_composite handling to the chokepoint or meshes can split
+    // across studios on a mid-sequence re-pair.
+    const pin = await resolveSessionTarget(args.studio_target);
+    if (pin && pin.error) return emResult({ ok: false, via: "editable_mesh", ...pin });
+    const pinnedSubmit = pin && pin.studioId
+      ? (type, payload, timeoutMs) => submitTo(pin.studioId, type, payload, timeoutMs)
+      : submit;
+    return await importViaEditableMesh(args, pinnedSubmit); // EditableMesh fallback (Task 7) — builds its own content shape
   }
 
   // ── Plugin-routed tools ──
@@ -631,10 +721,47 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true };
   }
 
-  // Long-running, plugin-side-bounded tools need a server timeout that clears
-  // their own deadline plus slack — otherwise the fixed 30s wall fires while
-  // the handler is still legitimately running and its real result is dropped.
-  const result = await submit(name, payload, toolTimeoutMs(name, args));
+  // ── Routing chokepoint ──
+  // The public submit(type,payload,timeout) signature is never changed; target
+  // routing is decided here and dispatched via submit / submitTo / fanout /
+  // control-queue. `args.studio_target` is read for routing but NEVER written
+  // into `payload` (the per-tool payload is built from named fields above and
+  // never spreads `args`), so every plugin handler is untouched. The per-tool
+  // wall-clock budget clears the tool's own deadline plus slack (a long-running
+  // plugin op must not be cut off by the fixed 30s wall).
+  const budget = toolTimeoutMs(name, args);
+  const route = routeCall({ name, args, sessionTarget: SESSION_TARGET });
+  let result;
+  switch (route.kind) {
+    case "stop_control":
+      // C3: start_stop_play{stop} →
+      //   broker mode: __stop_play on the studio's CONTROL queue (carries no
+      //     payload) so it reaches a plugin whose COMMAND loop is yielded inside
+      //     a play test (§5.9).
+      //   inline mode: no control loop — route the stop through the NORMAL command
+      //     path exactly as today (single session handles it on the command loop).
+      result = BROKER_MODE
+        ? await submitControl(route.target, "__stop_play", {}, budget)
+        : await submit(name, payload, budget);
+      break;
+    case "fanout":
+      result = await fanoutSubmit(name, payload, budget);
+      break;
+    case "submit_to": {
+      const sel = await resolveSessionTarget(route.target);
+      if (sel && sel.error) { result = sel; break; }
+      result = await submitTo(sel.studioId, name, payload, budget);
+      break;
+    }
+    case "submit_default":
+    default:
+      // routeCall never reaches the chokepoint with `control_tool` (handled by
+      // the early returns above) or `pin_composite` (only import_blender_model is
+      // a composite, handled at its own call site). So only stop_control / fanout
+      // / submit_to / submit_default land here; default covers submit_default.
+      result = await submit(name, payload, budget);
+      break;
+  }
   return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 });
 
@@ -642,5 +769,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 // Connect MCP transport
 // ---------------------------------------------------------------------------
 
+// ── Session teardown ──
+// Forward concern from Task 4: an in-proc broker leader owns an httpServer with
+// no free-running idle-reaper, so it must not outlive THIS session. When the
+// stdio transport ends (the MCP client/host disconnects), stop the heartbeat and
+// close the bound httpServer (if any) so the in-proc broker dies with the
+// session. Idempotent; safe in both modes (inline createBridge also exposes one).
+let teardownDone = false;
+function teardownBridge() {
+  if (teardownDone) return;
+  teardownDone = true;
+  try { bridge.stopHeartbeat?.(); } catch {}
+  try { bridge.httpServer?.close?.(); } catch {}
+}
+
 const transport = new StdioServerTransport();
+// server.onclose is the SDK's public teardown hook — it fires when the stdio
+// transport closes (the host disconnects). We do NOT set transport.onclose
+// directly: server.connect() overwrites it to route into server.onclose, so
+// hooking the Server is the stable contract. Signals cover an external kill.
+server.onclose = teardownBridge;
+process.once("SIGINT", () => { teardownBridge(); process.exit(0); });
+process.once("SIGTERM", () => { teardownBridge(); process.exit(0); });
 await server.connect(transport);

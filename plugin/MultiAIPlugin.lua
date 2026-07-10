@@ -17,6 +17,42 @@ local RunService = game:GetService("RunService")
 local SERVER_URL = "http://127.0.0.1:8765"
 local POLL_INTERVAL = 0.5
 local MCP_STOP_SIGNAL_KEY = "MultiAI_StopPlaySignal"
+local STUDIO_ID_KEY = "MultiAI_StudioId"
+local CONTROL_POLL_INTERVAL = 1.0
+
+-- ---------------------------------------------------------------------------
+-- Studio identity: a stable per-Studio-window id the broker uses for routing.
+-- Minted via HttpService:GenerateGUID (32 hex, no braces), persisted with
+-- plugin:SetSetting (the same cross-session persistence class proven by
+-- MultiAI_StopPlaySignal). NOT PlaceId (0 for unsaved / identical across
+-- windows) nor JobId ("" in Edit). All persistence is pcall-guarded: if
+-- SetSetting/GetSetting fail, the id is still minted per-load (a non-persistent
+-- fallback — strictly no worse than today, which carries no identity at all).
+-- `studioId` is a mutable upvalue: the __assign_studio_id handler reassigns it
+-- in place so the next poll's requestHeaders() carries the new id.
+-- ---------------------------------------------------------------------------
+-- Per-window identity: mint a FRESH id on every plugin load and never reuse a
+-- persisted one for routing. plugin:SetSetting is per-plugin USER-GLOBAL (shared
+-- by every Studio window on the machine), so persisting+reusing the id made all
+-- windows send the same x-studio-id → the broker saw them as ONE contested studio
+-- and could not address them separately. Minting fresh per load gives each window
+-- a unique id from its first poll. `studioId` stays a mutable upvalue so the
+-- (now dormant) __assign_studio_id handler can still reassign it in place.
+local studioId: string = HttpService:GenerateGUID(false)
+
+-- Advisory display label (never a routing key): game name + short id suffix.
+local studioLabel: string = (function(): string
+    local name = "Studio"
+    local okName, gameName = pcall(function() return game.Name end)
+    if okName and typeof(gameName) == "string" and gameName ~= "" then
+        name = gameName
+    end
+    return `{name} #{string.sub(studioId, 1, 4)}`
+end)()
+
+-- Tracks whether the current studioLabel has already been sent, so steady-state
+-- polls omit x-studio-label and only re-send it when it changes.
+local labelSent = false
 
 -- Optional shared secret. Leave "" for the default (no auth). To require auth,
 -- set this to the same value as the server's ROBLOX_MCP_TOKEN env var, then
@@ -24,12 +60,27 @@ local MCP_STOP_SIGNAL_KEY = "MultiAI_StopPlaySignal"
 -- `x-mcp-token` header on every /poll and /result request.
 local AUTH_TOKEN = ""
 
--- Header table for authenticated requests (nil when no token is configured).
-local function authHeaders(): { [string]: string }?
+-- Header table for every broker request. ALWAYS carries x-studio-id (re-reading
+-- the LIVE studioId upvalue on each call — never a load-time capture, so an
+-- __assign_studio_id reassignment is reflected on the very next poll). Adds
+-- x-mcp-token only when AUTH_TOKEN is configured, and x-studio-label only on the
+-- first send or after the label changes (steady-state polls send id-only).
+local function requestHeaders(includeLabel: boolean?): { [string]: string }
+    local headers: { [string]: string } = { ["x-studio-id"] = studioId }
     if AUTH_TOKEN ~= "" then
-        return { ["x-mcp-token"] = AUTH_TOKEN }
+        headers["x-mcp-token"] = AUTH_TOKEN
     end
-    return nil
+    if includeLabel and not labelSent then
+        headers["x-studio-label"] = studioLabel
+        labelSent = true
+    end
+    return headers
+end
+
+-- Back-compat alias: any historical authHeaders() call now delegates to
+-- requestHeaders() so it keeps sending x-studio-id too.
+local function authHeaders(): { [string]: string }
+    return requestHeaders(false)
 end
 
 -- ---------------------------------------------------------------------------
@@ -157,6 +208,38 @@ end
 -- ---------------------------------------------------------------------------
 
 local handlers: { [string]: (any) -> any } = {}
+
+-- ── Broker control commands (delivered on the control loop; never user tools) ──
+
+-- Reassign this Studio's id when the broker detects two windows sharing the same
+-- persisted MultiAI_StudioId (the "contested" case). The broker hands the second
+-- window a fresh GUID; we validate, persist, and mutate the live studioId upvalue
+-- so the very next poll's requestHeaders() carries the new id.
+handlers.__assign_studio_id = function(payload)
+    local newId = payload.studio_id
+    if typeof(newId) ~= "string" or not string.match(newId, "^[0-9a-fA-F%-]+$") then
+        return { ok = false, error = "invalid studio_id" }
+    end
+    local len = string.len(newId)
+    if len < 8 or len > 64 then
+        return { ok = false, error = "studio_id length out of range" }
+    end
+    pcall(function() plugin:SetSetting(STUDIO_ID_KEY, newId) end)
+    studioId = newId
+    studioLabel = `Studio #{string.sub(studioId, 1, 4)}`
+    labelSent = false
+    return { ok = true, studio_id = studioId }
+end
+
+-- Arm the existing Server-context StopPlaySignal watcher (the RunService:IsServer
+-- block near the top of this file, UNTOUCHED) so a second session can stop a play
+-- test even while THIS plugin's command loop is yielded inside
+-- ExecutePlayModeAsync. Only SetSetting — returns immediately, never blocks the
+-- control loop.
+handlers.__stop_play = function(_payload)
+    pcall(function() plugin:SetSetting(MCP_STOP_SIGNAL_KEY, true) end)
+    return { ok = true }
+end
 
 handlers.run_luau = function(payload)
     local code = payload.code
@@ -3077,7 +3160,7 @@ local function loop()
     print(`[MultiAI] Polling started — {SERVER_URL}`)
     while running do
         local ok, response = pcall(function()
-            return HttpService:GetAsync(SERVER_URL .. "/poll", true, authHeaders())
+            return HttpService:GetAsync(SERVER_URL .. "/poll", true, requestHeaders(true))
         end)
         if ok then
             -- Server responded → connection healthy
@@ -3098,7 +3181,7 @@ local function loop()
                             HttpService:JSONEncode(result),
                             Enum.HttpContentType.ApplicationJson,
                             false,
-                            authHeaders()
+                            requestHeaders(false)
                         )
                     end)
                     if not postOk then warn(`[MultiAI] post failed: {tostring(postErr)}`) end
@@ -3120,11 +3203,223 @@ local function loop()
     print("[MultiAI] Polling stopped")
 end
 
+-- ── Control loop ──
+-- A SECOND, independent poll loop on a short interval. Unlike the command loop
+-- (which yields for the full duration of a long handler such as
+-- ExecutePlayModeAsync), the control loop only ever dispatches __assign_studio_id
+-- / __stop_play — handlers that just SetSetting/mutate an upvalue and return — so
+-- it stays responsive during play mode. This is the channel that delivers
+-- cross-session play-stop and same-id collision reassignment. It never touches
+-- the command loop's `connected` visual. In inline mode the broker 404s
+-- /studio/control-poll; the pcall swallows it and the loop idles harmlessly.
+local controlThread: thread? = nil
+
+local function controlLoop()
+    while running do
+        local ok, response = pcall(function()
+            return HttpService:GetAsync(SERVER_URL .. "/studio/control-poll", true, requestHeaders(false))
+        end)
+        if ok and response and response ~= "" and response ~= "{}" then
+            local decoded
+            local decodeOk = pcall(function() decoded = HttpService:JSONDecode(response) end)
+            if decodeOk and decoded and decoded.id then
+                local result = executeCommand(decoded)
+                pcall(function()
+                    HttpService:PostAsync(
+                        SERVER_URL .. "/studio/result/" .. decoded.id,
+                        HttpService:JSONEncode(result),
+                        Enum.HttpContentType.ApplicationJson,
+                        false,
+                        requestHeaders(false)
+                    )
+                end)
+            end
+        end
+        task.wait(CONTROL_POLL_INTERVAL)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Session picker dock panel
+-- A DockWidgetPluginGui listing the broker's live Claude sessions. Click a row to
+-- pair THIS window to that session (POST /studio/pair); the active pairing is
+-- highlighted; clicking the active row disconnects. Polls GET /studio/sessions on
+-- its own ~1.5s timer (only while the panel is open), independent of the command
+-- and control loops.
+-- ---------------------------------------------------------------------------
+local SESSIONS_POLL_INTERVAL = 1.5
+
+local pickerWidget = plugin:CreateDockWidgetPluginGui(
+    "MultiAISessionPicker",
+    DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, true, 300, 420, 240, 320)
+)
+pickerWidget.Title = "Multi-AI — sessions"
+pickerWidget.Name = "MultiAISessionPicker"
+
+local pickerRoot = Instance.new("Frame")
+pickerRoot.Size = UDim2.fromScale(1, 1)
+pickerRoot.BackgroundColor3 = Color3.fromRGB(46, 46, 46)
+pickerRoot.BorderSizePixel = 0
+pickerRoot.Parent = pickerWidget
+
+local headerLabel = Instance.new("TextLabel")
+headerLabel.Size = UDim2.new(1, -16, 0, 40)
+headerLabel.Position = UDim2.fromOffset(8, 4)
+headerLabel.BackgroundTransparency = 1
+headerLabel.TextXAlignment = Enum.TextXAlignment.Left
+headerLabel.Font = Enum.Font.GothamMedium
+headerLabel.TextSize = 13
+headerLabel.TextColor3 = Color3.fromRGB(235, 235, 235)
+headerLabel.TextWrapped = true
+headerLabel.Text = "this window"
+headerLabel.Parent = pickerRoot
+
+local pickerList = Instance.new("ScrollingFrame")
+pickerList.Size = UDim2.new(1, -8, 1, -52)
+pickerList.Position = UDim2.fromOffset(4, 48)
+pickerList.BackgroundTransparency = 1
+pickerList.BorderSizePixel = 0
+pickerList.ScrollBarThickness = 6
+pickerList.CanvasSize = UDim2.new()
+pickerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+pickerList.Parent = pickerRoot
+
+local pickerLayout = Instance.new("UIListLayout")
+pickerLayout.Padding = UDim.new(0, 6)
+pickerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+pickerLayout.Parent = pickerList
+
+-- POST /studio/pair to bind this window to `sessionId` (or unpair when nil).
+local function pairTo(sessionId: string?)
+    task.spawn(function()
+        -- nil = disconnect. In Luau `{ session_id = nil }` drops the key and encodes
+        -- to "[]", which the broker reads as a MISSING field (not a disconnect). Send
+        -- an explicit JSON null so POST /studio/pair routes to unpairStudio.
+        local body
+        if sessionId == nil then
+            body = "{\"session_id\":null}"
+        else
+            body = HttpService:JSONEncode({ session_id = sessionId })
+        end
+        pcall(function()
+            HttpService:PostAsync(
+                SERVER_URL .. "/studio/pair", body,
+                Enum.HttpContentType.ApplicationJson, false, requestHeaders(false)
+            )
+        end)
+    end)
+end
+
+-- Rebuild the row list from a /studio/sessions response.
+local function renderSessions(data)
+    headerLabel.Text = `{studioLabel}  ·  #{string.sub(studioId, 1, 4)}`
+    for _, child in pickerList:GetChildren() do
+        if not child:IsA("UIListLayout") then child:Destroy() end
+    end
+    local you = data.you or {}
+    local sessions = data.sessions or {}
+    for i, session in sessions do
+        local isActive = you.paired_session_id ~= nil and session.session_id == you.paired_session_id
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 40)
+        row.LayoutOrder = i
+        row.AutoButtonColor = true
+        row.BackgroundColor3 = isActive and Color3.fromRGB(24, 96, 165) or Color3.fromRGB(58, 58, 58)
+        row.BorderSizePixel = 0
+        row.Text = ""
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = row
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -82, 1, 0)
+        label.Position = UDim2.fromOffset(10, 0)
+        label.BackgroundTransparency = 1
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 13
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.TextColor3 = Color3.fromRGB(240, 240, 240)
+        label.Text = session.label or session.session_id
+        label.Parent = row
+
+        local state = Instance.new("TextLabel")
+        state.Size = UDim2.new(0, 70, 1, 0)
+        state.Position = UDim2.new(1, -76, 0, 0)
+        state.BackgroundTransparency = 1
+        state.TextXAlignment = Enum.TextXAlignment.Right
+        state.Font = Enum.Font.Gotham
+        state.TextSize = 12
+        if isActive then
+            state.Text = "● active"
+            state.TextColor3 = Color3.fromRGB(180, 220, 255)
+        elseif session.paired_studio_id then
+            state.Text = "in use"
+            state.TextColor3 = Color3.fromRGB(150, 150, 150)
+        else
+            state.Text = "connect"
+            state.TextColor3 = Color3.fromRGB(120, 200, 140)
+        end
+        state.Parent = row
+
+        row.Activated:Connect(function()
+            if isActive then pairTo(nil) else pairTo(session.session_id) end
+        end)
+        row.Parent = pickerList
+    end
+    if #sessions == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Font = Enum.Font.Gotham
+        empty.TextSize = 12
+        empty.TextColor3 = Color3.fromRGB(150, 150, 150)
+        empty.Text = "no sessions connected"
+        empty.Parent = pickerList
+    end
+end
+
+-- Poll GET /studio/sessions only while the panel is open.
+local function sessionsLoop()
+    while running do
+        if pickerWidget.Enabled then
+            local ok, response = pcall(function()
+                return HttpService:GetAsync(SERVER_URL .. "/studio/sessions", true, requestHeaders(false))
+            end)
+            if ok and response and response ~= "" then
+                local decoded
+                local decodeOk = pcall(function() decoded = HttpService:JSONDecode(response) end)
+                if decodeOk and decoded and decoded.ok then
+                    pcall(renderSessions, decoded)
+                end
+            end
+        end
+        task.wait(SESSIONS_POLL_INTERVAL)
+    end
+end
+
+local sessionsButton = toolbar:CreateButton(
+    "Sessions",
+    "Show/hide the Multi-AI session picker",
+    "rbxassetid://83497326633061"
+)
+sessionsButton.ClickableWhenViewportHidden = true
+sessionsButton:SetActive(pickerWidget.Enabled)
+sessionsButton.Click:Connect(function()
+    pickerWidget.Enabled = not pickerWidget.Enabled
+    sessionsButton:SetActive(pickerWidget.Enabled)
+end)
+pickerWidget:GetPropertyChangedSignal("Enabled"):Connect(function()
+    sessionsButton:SetActive(pickerWidget.Enabled)
+end)
+
 local function startPolling()
     if running then return end
     running = true
     setStatusVisual("connecting")
     connectionThread = task.spawn(loop)
+    controlThread = task.spawn(controlLoop)
+    task.spawn(sessionsLoop)
 end
 
 local function stopPolling()

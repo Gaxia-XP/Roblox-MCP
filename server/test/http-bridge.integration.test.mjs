@@ -5,6 +5,15 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+// Isolated LOCALAPPDATA so the inline server never reads/writes a real
+// machine broker-token. Combined with ALLOW_TOKENLESS this pins the tokenless
+// single-session behavior these guards target, independent of the host box.
+const APPDATA_DIR = mkdtempSync(join(tmpdir(), "roblox-mcp-itest-"));
+// Env every spawned server.mjs inherits: inline (pre-broker) mode + no token.
+const INLINE_ENV = { ROBLOX_MCP_MODE: "inline", ROBLOX_MCP_ALLOW_TOKENLESS: "1", LOCALAPPDATA: APPDATA_DIR };
 
 // Integration tests for the inline HTTP bridge in server.mjs. We spawn the real
 // server.mjs on an isolated port (never 8765 — that's the live Studio bridge)
@@ -56,7 +65,12 @@ let PORT;
 before(async () => {
   PORT = await getFreePort();
   child = spawn(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, ROBLOX_MCP_PORT: String(PORT) },
+    // INLINE_ENV pins the pre-broker single-session server (the inline
+    // createBridge that logs "bridge on ..." and owns the port), tokenless and
+    // with an isolated LOCALAPPDATA — the artifact these guards were written
+    // against. Without it server.mjs defaults to broker mode (no "bridge on"
+    // line -> startup timeout) and mints a machine token (-> 401 on /submit).
+    env: { ...process.env, ...INLINE_ENV, ROBLOX_MCP_PORT: String(PORT) },
     stdio: ["pipe", "pipe", "pipe"],
   });
   // Wait for the "bridge on ..." line on stderr (server.mjs logs it in the
@@ -78,6 +92,7 @@ before(async () => {
 
 after(() => {
   if (child && !child.killed) child.kill();
+  rmSync(APPDATA_DIR, { recursive: true, force: true });
 });
 
 test("GET /health -> 200 ok:true", async () => {
@@ -142,7 +157,9 @@ test("EADDRINUSE -> server.mjs exits 1 with FATAL log", async () => {
   await new Promise((r) => holder.listen(0, "127.0.0.1", r));
   const busyPort = holder.address().port;
   const r = spawnSync(process.execPath, [SERVER_PATH], {
-    env: { ...process.env, ROBLOX_MCP_PORT: String(busyPort) },
+    // Inline mode so the EADDRINUSE FATAL path under test is the createBridge
+    // lifecycle (broker mode elects/spawns differently and won't bind here).
+    env: { ...process.env, ...INLINE_ENV, ROBLOX_MCP_PORT: String(busyPort) },
     encoding: "utf8",
     timeout: 8000,
   });
