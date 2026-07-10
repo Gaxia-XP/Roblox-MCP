@@ -107,13 +107,13 @@ export function loadOrMintMachineToken({
   tokenPath = BROKER_TOKEN_PATH,
 } = {}) {
   if (explicit) return explicit;                  // operator override wins
+  if (allowTokenless) return "";                  // explicit opt-out (no mint, no read)
   try {
     if (existsSync(tokenPath)) {
       const t = readFileSync(tokenPath, "utf8").trim();
       if (t) return t;
     }
   } catch { /* fall through */ }
-  if (allowTokenless) return "";                  // explicit opt-out (no mint)
   try {
     mkdirSync(dirname(tokenPath), { recursive: true });
     const tok = randomBytes(24).toString("hex");

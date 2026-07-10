@@ -125,6 +125,25 @@ test("loadOrMintMachineToken: ROBLOX_MCP_ALLOW_TOKENLESS=1 (or allowTokenless) -
   }
 });
 
+test("loadOrMintMachineToken: allowTokenless=true returns '' even when token file exists (bug fix)", () => {
+  // BUG: prior to fix, the function read token file BEFORE checking allowTokenless,
+  // so the opt-out was ignored when a persisted token existed. This test reproduces
+  // the bug — it creates a token file first, then calls with allowTokenless:true.
+  const tmp = mkdtempSync(join(tmpdir(), "rbxmcp-tokenless-bug-"));
+  const tokenPath = join(tmp, "broker-token");
+  try {
+    // 1. Create a persisted token file (simulate prior mint)
+    writeFileSync(tokenPath, "persisted-token-from-earlier-run", { mode: 0o600 });
+    assert.ok(existsSync(tokenPath), "pre-condition: token file exists");
+
+    // 2. Call with allowTokenless:true — should return "" (ignore file)
+    const tok = loadOrMintMachineToken({ allowTokenless: true, tokenPath });
+    assert.equal(tok, "", "allowTokenless:true must return '' even when token file exists");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("C4 token agreement: spawned broker.mjs and loadOrMintMachineToken read the SAME token from the SAME path", async () => {
   // A fresh sandbox with NO pre-existing token and NO tokenless opt-out: the
   // real broker.mjs entry must MINT a broker-token, and the shared helper (what
@@ -156,7 +175,8 @@ test("C4 token agreement: spawned broker.mjs and loadOrMintMachineToken read the
     const onDisk = readFileSync(tokenPath, "utf8").trim();
     // The shared helper, pointed at the SAME path, returns the SAME token the
     // broker minted — the single-implementation agreement C4 requires.
-    const viaHelper = loadOrMintMachineToken({ tokenPath });
+    // Override allowTokenless:false because the test suite's global env sets it to "1".
+    const viaHelper = loadOrMintMachineToken({ tokenPath, allowTokenless: false });
     assert.equal(viaHelper, onDisk, "in-proc leader's helper agrees with the spawned broker's token");
   } finally {
     child.kill();
