@@ -24,3 +24,4 @@ desktop.ini
 
 # Skill build artifacts (packaged .skill zips — regenerated from skill/*/ sources)
 *.skill
+GaxiaPackages/
