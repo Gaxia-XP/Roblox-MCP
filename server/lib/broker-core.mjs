@@ -32,6 +32,7 @@ const DRAIN_CEILING_MS = 60_000;
 const POLL_TIMEOUT_MS = 10_000;
 const CONTROL_POLL_TIMEOUT_MS = 10_000;
 const CONTESTED_WINDOW_MS = 3_000; // two distinct connIds within this → contested
+const REASSIGN_COOLDOWN_MS = 30_000; // contested self-heal: one reassign per episode (§5)
 const PROTO = 1;
 const LEGACY_STUDIO_ID = "legacy:default";
 const LEGACY_SESSION_ID = "session:legacy";
@@ -60,6 +61,8 @@ export function createBrokerCore({
   const ctrlQueues = new Map();
   // recent connIds per studioId, for contested detection: id -> Map<connId, ts>
   const recentConns = new Map();
+  // contested self-heal: last auto-__assign_studio_id per studioId (cooldown guard)
+  const reassignAt = new Map();
 
   function cmdQueue(studioId) {
     let q = cmdQueues.get(studioId);
@@ -168,6 +171,23 @@ export function createBrokerCore({
     const m = recentConns.get(studioId);
     if (m) m.delete(connId);
     recomputeContested(studioId);
+  }
+
+  // §5 of BUGREPORT-multistudio-concurrent-routing: contention was detected but
+  // never RESOLVED — __assign_studio_id existed only in tests. The plugin's
+  // control loop already handles it (validate → re-register under a fresh id),
+  // so the broker hands ONE window a fresh id; it re-appears as a separate
+  // studio and the pair auto-pairs. Guards: (1) once per episode via cooldown,
+  // (2) fresh 32-hex id passes ID_RE + plugin validation, (3) legacy id exempt
+  // (header-less polls carry no per-window identity to reassign).
+  function maybeReassign(studioId, t) {
+    if (studioId === LEGACY_STUDIO_ID) return null;
+    const last = reassignAt.get(studioId) || 0;
+    if (t - last < REASSIGN_COOLDOWN_MS) return null;
+    reassignAt.set(studioId, t);
+    const fresh = randomUUID().replace(/-/g, "");
+    enqueueControl(studioId, "__assign_studio_id", { studio_id: fresh });
+    return fresh;
   }
 
   // ── enqueue (§4.3) ──
@@ -302,7 +322,12 @@ export function createBrokerCore({
     // Command poll: this connId is active for the life of the poll.
     const contested = noteConn(studioId, connId);
 
-    if (contested) { releaseConn(studioId, connId); return sendJson(res, 200, {}); } // §2.6: hold while contested
+    if (contested) {
+      // §2.6: hold while contested + §5 self-heal: hand one window a fresh id.
+      maybeReassign(studioId, t);
+      releaseConn(studioId, connId);
+      return sendJson(res, 200, {});
+    }
     if (draining) { releaseConn(studioId, connId); return sendJson(res, 200, {}); }   // §3.6: stop new dequeues
 
     const q = cmdQueue(studioId);
@@ -564,7 +589,7 @@ export function createBrokerCore({
     enqueueToStudio, enqueueControl, beginShutdown, sweep,
     getSnapshot, getStudioStatus,
     // exposed for the entry / tests:
-    _internals: { cmdQueue, ctrlQueue, noteConn, countInFlight, hasInFlight, drainExpired, isDraining: () => draining, fanoutSubmit },
+    _internals: { cmdQueue, ctrlQueue, noteConn, maybeReassign, countInFlight, hasInFlight, drainExpired, isDraining: () => draining, fanoutSubmit },
     LEGACY_STUDIO_ID, LEGACY_SESSION_ID,
   };
 }

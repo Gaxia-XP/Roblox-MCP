@@ -172,6 +172,45 @@ test("two distinct connIds within window mark contested; control-poll gets __ass
   } finally { close(); }
 });
 
+// ── contested self-heal (§5): command-poll AUTO-fires __assign_studio_id ──
+test("contested command-poll auto-enqueues __assign_studio_id once per episode (cooldown + legacy exempt)", async () => {
+  const { port, core, registry, clock, close } = await startCore();
+  try {
+    registry.upsertStudio({ studioId: "cafe0001", label: "C", connId: 0 });
+    // Simulate two overlapping command polls (§2.6 detection) — the production
+    // gap from the bug report: detection worked, nothing ever resolved it.
+    core._internals.noteConn("cafe0001", 101);
+    core._internals.noteConn("cafe0001", 102); // 2 distinct → contested
+
+    // A REAL command poll now sees contested → holds AND self-heals.
+    const poll = await req(port, { path: "/studio/poll", headers: { "x-studio-id": "cafe0001" } });
+    assert.deepEqual(j(poll.body), {}); // held, no command delivered
+
+    // Control-poll delivers a fresh 32-hex id (≠ the old one) — the plugin
+    // re-registers under it and the two windows become addressable separately.
+    const ctrl = await req(port, { path: "/studio/control-poll", headers: { "x-studio-id": "cafe0001" } });
+    const c = j(ctrl.body);
+    assert.equal(c.type, "__assign_studio_id");
+    assert.match(c.payload.studio_id, /^[0-9a-f]{32}$/);
+    assert.notEqual(c.payload.studio_id, "cafe0001");
+
+    // Guard 1 (cooldown): still contested, but the episode is closed — no spam.
+    clock.adv(5_000); // 5s < 30s cooldown
+    assert.equal(core._internals.maybeReassign("cafe0001", clock.read()), null);
+    assert.equal(core._internals.ctrlQueue("cafe0001").pending.length, 0);
+
+    // After the cooldown a NEW episode may re-arm (self-heal stays available).
+    clock.adv(31_000);
+    const again = core._internals.maybeReassign("cafe0001", clock.read());
+    assert.match(again, /^[0-9a-f]{32}$/);
+    assert.notEqual(again, c.payload.studio_id);
+
+    // Guard 3: legacy id is exempt — header-less polls have no identity to move.
+    assert.equal(core._internals.maybeReassign("legacy:default", clock.read()), null);
+    assert.equal(core._internals.ctrlQueue("legacy:default").pending.length, 0);
+  } finally { close(); }
+});
+
 // ── drain blocks new dequeues; refuses while in-flight ────────────────────
 test("draining: /studio/poll returns {} (no new dequeue) and sweep stays non-idle while inFlight>0", async () => {
   const { port, core, registry, clock, close } = await startCore({ idleReapMs: 10 });

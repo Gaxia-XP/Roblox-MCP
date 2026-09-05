@@ -209,6 +209,17 @@ end
 
 local handlers: { [string]: (any) -> any } = {}
 
+-- Format an arbitrary value for run_luau's return_value field: Instances read
+-- as full paths, everything else falls back to tostring().
+local function describeValue(v: any): string
+    if typeof(v) == "Instance" then
+        local ok, full = pcall(function() return v:GetFullName() end)
+        if ok and full ~= "" then return full end
+        return `{v.ClassName} ({v.Name})`
+    end
+    return tostring(v)
+end
+
 -- ── Broker control commands (delivered on the control loop; never user tools) ──
 
 -- Reassign this Studio's id when the broker detects two windows sharing the same
@@ -320,20 +331,43 @@ handlers.run_luau = function(payload)
         tick = tick,
     }, { __index = _G })
 
-    local fn, err = loadstring(code, "MCPCommand")
+    -- Expression capture: if the whole snippet compiles as ONE expression, wrap
+    -- it in `return (...)` so the evaluated value is reported (REPL-style).
+    -- Multi-statement snippets fail to compile as an expression → run as-is.
+    local fn, err = loadstring(`return ({code})`, "MCPCommand")
+    local isExpr = fn ~= nil
+    if not fn then
+        fn, err = loadstring(code, "MCPCommand")
+    end
     if not fn then return { error = "compile error: " .. tostring(err) } end
     setfenv(fn, env)
 
+    local retValue = nil
     local ok, runErr = pcall(function()
         return withRecording("MCP run_luau", function()
-            local success, e = pcall(fn)
-            if not success then error(e, 0) end
+            -- xpcall captures a Lua traceback with the error message — a bare
+            -- pcall only surfaces the message and mid-script errors used to
+            -- truncate `output` with no error text at all.
+            local results = table.pack(xpcall(fn, function(ex)
+                return debug.traceback(tostring(ex), 2)
+            end))
+            if not results[1] then
+                error(results[2], 0) -- re-raise: message + traceback string
+            end
+            if results.n >= 2 then
+                retValue = results[2]
+            end
         end)
     end)
     if not ok then
         return { error = tostring(runErr), output = table.concat(outputs, "\n") }
     end
-    return { ok = true, output = table.concat(outputs, "\n") }
+    local result: any = { ok = true, output = table.concat(outputs, "\n") }
+    if isExpr then
+        result.returned = true
+        result.return_value = describeValue(retValue)
+    end
+    return result
 end
 
 handlers.get_tree = function(payload)
@@ -552,12 +586,133 @@ handlers.read_script = function(payload)
     if not inst:IsA("LuaSourceContainer") then
         return { error = inst.ClassName .. " is not a Script/LocalScript/ModuleScript" }
     end
+    local source = inst.Source
+    local totalLines = 0
+    for _ in (source .. "\n"):gmatch("([^\n]*)\n") do totalLines += 1 end
+
+    -- Optional line-range read (offset is 1-indexed; limit = max rows). Keeps
+    -- big-script reads bounded instead of dumping 2k+ lines in one payload.
+    local offset = tonumber(payload.offset)
+    local limit = tonumber(payload.limit)
+    local text = source
+    if offset or limit then
+        local startIdx = math.max(1, math.floor(offset or 1))
+        local endIdx = startIdx + math.max(1, math.floor(limit or (totalLines - startIdx + 1))) - 1
+        local out, lineNo = {}, 0
+        for line in (source .. "\n"):gmatch("([^\n]*)\n") do
+            lineNo += 1
+            if lineNo >= startIdx and lineNo <= endIdx then
+                table.insert(out, line)
+                if lineNo >= endIdx then break end
+            end
+        end
+        text = table.concat(out, "\n")
+    end
     return {
-        source = inst.Source,
+        source = text,
         name = inst.Name,
         className = inst.ClassName,
         path = inst:GetFullName(),
+        total_lines = totalLines,
+        offset = offset and startIdx or nil,
+        limit = limit and math.min(math.floor(limit), totalLines) or nil,
     }
+end
+
+-- script_grep: Luau-pattern search across EVERY script's Source. Answers
+-- "where is X defined?" in one round-trip instead of get_tree + N×read_script.
+handlers.script_grep = function(payload)
+    local pattern = payload.pattern
+    if typeof(pattern) ~= "string" or pattern == "" then
+        return { error = "pattern is required" }
+    end
+    local maxResults = math.clamp(math.floor(tonumber(payload.max_results) or 50), 1, 200)
+    local matches: { any } = {}
+    local truncated = false
+
+    local function searchContainer(container: Instance)
+        for _, inst in ipairs(container:GetDescendants()) do
+            if truncated then break end
+            if inst:IsA("LuaSourceContainer") then
+                local lineNo = 0
+                for line in (inst.Source .. "\n"):gmatch("([^\n]*)\n") do
+                    lineNo += 1
+                    if string.find(line, pattern) then
+                        table.insert(matches, {
+                            path = inst:GetFullName(),
+                            name = inst.Name,
+                            className = inst.ClassName,
+                            line = lineNo,
+                            text = string.sub(line, 1, 300),
+                        })
+                        if #matches >= maxResults then
+                            truncated = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for _, svcName in ipairs({ "Workspace", "ReplicatedStorage", "ServerScriptService", "ServerStorage",
+        "StarterGui", "StarterPack", "StarterPlayer", "StarterPlayerScripts", "Lighting", "SoundService", "ReplicatedFirst" }) do
+        local ok, svc = pcall(function() return game:GetService(svcName) end)
+        if ok and svc then searchContainer(svc) end
+        if truncated then break end
+    end
+
+    return { matches = matches, count = #matches, truncated = truncated, pattern = pattern }
+end
+
+-- multi_edit: apply several script create/update ops in ONE command — one
+-- ChangeHistory undo step, one round-trip. Per-op failures are reported, not
+-- fatal: good ops commit, bad ops carry { error }.
+handlers.multi_edit = function(payload)
+    local ops = payload.scripts
+    if typeof(ops) ~= "table" then return { error = "scripts array is required" } end
+    if #ops == 0 then return { error = "scripts array is empty" } end
+    if #ops > 50 then return { error = "too many ops (max 50)" } end
+    return withRecording("MCP multi_edit", function()
+        local results: { any } = {}
+        local created, updated, failed = 0, 0, 0
+        for i, op in ipairs(ops) do
+            local entry: any = { index = i }
+            local ok, err = pcall(function()
+                if typeof(op.path) == "string" and op.path ~= "" then
+                    local inst = resolvePath(op.path)
+                    if not inst or not inst:IsA("LuaSourceContainer") then
+                        error("path not found or not a script: " .. tostring(op.path))
+                    end
+                    inst.Source = op.source or ""
+                    updated += 1
+                    entry.updated = true
+                    entry.path = inst:GetFullName()
+                else
+                    local parent = resolvePath(op.parent or "Workspace")
+                    if not parent then
+                        error("parent not found: " .. tostring(op.parent))
+                    end
+                    local className = op.script_type == "LocalScript" and "LocalScript"
+                        or op.script_type == "ModuleScript" and "ModuleScript"
+                        or "Script"
+                    local inst = Instance.new(className)
+                    inst.Name = op.name or className
+                    inst.Source = op.source or ""
+                    inst.Parent = parent
+                    created += 1
+                    entry.created = true
+                    entry.path = inst:GetFullName()
+                end
+            end)
+            if not ok then
+                failed += 1
+                entry.error = tostring(err)
+            end
+            table.insert(results, entry)
+        end
+        return { ok = failed == 0, created = created, updated = updated, failed = failed, results = results }
+    end)
 end
 
 handlers.update_script = function(payload)
@@ -3144,16 +3299,67 @@ local function setStatusVisual(state: string)
     statusButton:SetActive(state == "connected")
 end
 
+-- ── Command watchdog (anti-wedge) ────────────────────────────────────────────
+-- Handlers run in their own scheduler-managed thread while THIS thread polls a
+-- done flag. If a handler never completes (e.g. run_luau require()ing a
+-- DataStore/MemoryStore-bound module in Edit mode — the 2026-09-05 wedge), the
+-- watchdog returns a TIMEOUT result: the result still gets posted, the poll
+-- loop survives, and the broker/MCP client unblocks. The orphaned thread may
+-- still finish later — its late finish() is ignored. Control handlers never
+-- yield, so there the watchdog is a pure safety net.
+-- NOTE: deliberately a done-flag + task.wait poll, NOT a BindableEvent wakeup —
+-- task.spawn runs a fast handler to completion BEFORE this thread reaches its
+-- wait, so an event fired before anyone waits is LOST (lost-wakeup wedge, seen
+-- live 2026-09-05). Polling is race-free; fast handlers never even enter the
+-- loop because task.spawn already set done=true synchronously.
+local HANDLER_TIMEOUT_S = 600 -- fallback when a command carries no timeout_s
+local WATCHDOG_POLL_S = 0.05
+
+local function executeWithTimeout(handler, payload, timeoutS)
+    local done = false
+    local result = nil
+    local function finish(r)
+        if done then return end
+        done = true
+        result = r
+    end
+    task.spawn(function()
+        local ok, r = pcall(handler, payload)
+        if not ok then
+            finish({ error = "handler crashed: " .. tostring(r) })
+        elseif type(r) ~= "table" then
+            finish({ ok = true })
+        else
+            finish(r)
+        end
+    end)
+    if not done then
+        local deadline = os.clock() + timeoutS
+        while not done and os.clock() < deadline do
+            task.wait(WATCHDOG_POLL_S)
+        end
+        if not done then
+            finish({
+                error = `command timed out after {timeoutS}s — handler still yielding (blocking API such as require/DataStore in Edit mode?). Executor recovered; the orphaned thread may still complete silently.`,
+                code = "TIMEOUT",
+                timed_out = true,
+            })
+        end
+    end
+    return result
+end
+
 local function executeCommand(cmd)
     local handler = handlers[cmd.type]
     if not handler then
         return { error = "unknown command: " .. tostring(cmd.type) }
     end
-    local ok, result = pcall(handler, cmd.payload or {})
-    if not ok then
-        return { error = "handler crashed: " .. tostring(result) }
-    end
-    return result
+    local payload = cmd.payload or {}
+    -- Per-command budget injected by the server (matches the tool's wall-clock
+    -- deadline); clamped so a bogus value can neither stall (too long) nor cut
+    -- legitimate work (too short).
+    local timeoutS = math.clamp(tonumber(payload.timeout_s) or HANDLER_TIMEOUT_S, 10, 3600)
+    return executeWithTimeout(handler, payload, timeoutS)
 end
 
 local function loop()

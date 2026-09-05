@@ -17,10 +17,10 @@ const OS_LOCAL = ["get_connection_status", "take_screenshot", "capture_studio_wi
 const CONTROL = ["list_studios", "attach_studio", "detach_studio", "session_status"];
 
 // ── count ─────────────────────────────────────────────────────────────────
-test("TOOLS count is 79 raw + 4 control = 83", () => {
-  assert.equal(TOOLS.length, 83);
+test("TOOLS count is 81 raw + 4 control = 85", () => {
+  assert.equal(TOOLS.length, 85);
   // names are unique
-  assert.equal(new Set(TOOLS.map((t) => t.name)).size, 83);
+  assert.equal(new Set(TOOLS.map((t) => t.name)).size, 85);
 });
 
 // ── studio_target present on representative data tools ────────────────────

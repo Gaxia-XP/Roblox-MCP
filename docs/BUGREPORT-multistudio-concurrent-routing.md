@@ -4,7 +4,7 @@
 - **Component:** Roblox-MCP-v6 broker — `server/lib/broker-core.mjs` (+ `plugin/MultiAIPlugin.lua`)
 - **Branch / worktree:** `claude/broker-multisession` · `practical-bartik-873c56`
 - **Severity:** High — ทำลาย core feature ของ v6 (หลาย AI session / หลาย Studio window พร้อมกัน)
-- **Status:** วินิจฉัยครบ ยังไม่แก้ (report-only ตามที่ร้องขอ)
+- **Status:** ~~วินิจฉัยครบ ยังไม่แก้ (report-only ตามที่ร้องขอ)~~ → **FIXED 2026-09-05** — broker ยิง `__assign_studio_id` อัตโนมัติตอน contested ผ่าน `maybeReassign()` (guard: cooldown 30s/episode + legacy id exempt) พร้อม test ใน `server/test/broker-core.test.mjs` ("contested command-poll auto-enqueues...") ฝั่ง plugin แก้ root แล้วก่อนหน้านี้ด้วย (mint id สดต่อ load)
 
 ---
 

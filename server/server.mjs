@@ -364,10 +364,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       payload = { path: args.path };
       break;
     case "read_script":
-      payload = { path: args.path };
+      payload = { path: args.path, offset: args.offset, limit: args.limit };
       break;
     case "update_script":
       payload = { path: args.path, source: args.source };
+      break;
+    case "script_grep":
+      payload = { pattern: args.pattern, max_results: args.max_results };
+      break;
+    case "multi_edit":
+      payload = { scripts: args.scripts };
       break;
     case "get_console_output":
       payload = {
@@ -730,6 +736,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   // wall-clock budget clears the tool's own deadline plus slack (a long-running
   // plugin op must not be cut off by the fixed 30s wall).
   const budget = toolTimeoutMs(name, args);
+  // ── Plugin watchdog budget (anti-wedge) ──
+  // The plugin runs every command under a watchdog that returns a TIMEOUT result
+  // at `payload.timeout_s`, so a handler wedged on a yielding API (e.g. require()
+  // of a DataStore-bound module in Edit mode) can never block the poll loop
+  // forever. Match the watchdog to THIS tool's wall-clock budget (+5s slack):
+  // legitimate long ops keep their full budget; wedged ones free the executor
+  // right after the client-side deadline would have fired anyway.
+  payload.timeout_s = Math.max(30, Math.ceil(budget / 1000) + 5);
   const route = routeCall({ name, args, sessionTarget: SESSION_TARGET });
   let result;
   switch (route.kind) {

@@ -86,7 +86,11 @@ const RAW_TOOLS = [
       "Read the source code of a Script / LocalScript / ModuleScript at the given dotted path. Use BEFORE update_script when iterating on existing code.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" } },
+      properties: {
+        path: { type: "string" },
+        offset: { type: "number", description: "1-indexed line to start reading from (line-range read for big scripts)." },
+        limit: { type: "number", description: "Max lines to return (with offset). Without offset, reads the whole file." },
+      },
       required: ["path"],
     },
   },
@@ -1160,6 +1164,44 @@ const RAW_TOOLS = [
     name: "import_blender_model",
     description: "End-to-end: upload a local .glb via Open Cloud then insert into Studio. Falls back to EditableMesh (no cloud) when ROBLOX_OPEN_CLOUD_API_KEY is unset.",
     inputSchema: { type: "object", properties: { local_path: { type: "string" }, parent_path: { type: "string", default: "Workspace" }, name: { type: "string" } }, required: ["local_path"] },
+  },
+  {
+    name: "script_grep",
+    description:
+      "Search a Luau string pattern across EVERY script's source in the game (Scripts, LocalScripts, ModuleScripts). Returns path/line/snippet matches, capped at max_results. Far faster than get_tree+read_script scans for 'where is X defined?' questions in a big codebase.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string", description: "Luau string pattern (plain text works as-is; e.g. 'NetService')." },
+        max_results: { type: "number", default: 50, description: "Cap on returned matches (1..200, default 50)." },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "multi_edit",
+    description:
+      "Apply MULTIPLE script create/update operations in ONE command (one ChangeHistory undo step, one round-trip). Each op: {path, source} to UPDATE an existing script, or {parent, name, source, script_type?} to CREATE one. Prefer this over N create_script/update_script calls when editing several scripts at once.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scripts: {
+          type: "array",
+          description: "Up to 50 ops. Update ops need {path, source}; create ops need {parent, name, source, script_type?}.",
+          items: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Existing script path (dotted) → update its Source." },
+              parent: { type: "string", description: "Create: parent dotted path (default Workspace)." },
+              name: { type: "string", description: "Create: script name." },
+              source: { type: "string", description: "Full new source." },
+              script_type: { type: "string", enum: ["Script", "LocalScript", "ModuleScript"], default: "Script" },
+            },
+          },
+        },
+      },
+      required: ["scripts"],
+    },
   },
 ];
 
