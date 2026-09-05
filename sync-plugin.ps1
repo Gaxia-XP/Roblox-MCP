@@ -28,11 +28,25 @@ if ([string]::IsNullOrEmpty($token)) {
 }
 if ([string]::IsNullOrEmpty($token)) { $token = "" }
 
-# Read source, rewrite the AUTH_TOKEN line, then write to destination.
-# Regex matches any previously-baked value so re-syncs are idempotent.
-$content = Get-Content -Path $src -Raw
+# Read source as UTF-8 EXPLICITLY. Windows PowerShell 5.1's `Get-Content`
+# without -Encoding decodes BOM-less files as ANSI (CP1252): every UTF-8
+# multi-byte char (em-dash, check mark, box drawing) became mojibake ("â€")
+# that was then re-encoded as UTF-8 into the installed plugin - which is what
+# Studio's Output/dock displayed. .NET ReadAllText with UTF8Encoding decodes
+# BOM-less UTF-8 correctly (and still strips a BOM if one ever appears).
+$content = [System.IO.File]::ReadAllText($src, (New-Object System.Text.UTF8Encoding($false)))
 $escaped = $token.Replace('\', '\\').Replace('"', '\"')
 $content = $content -replace '(?m)^(local AUTH_TOKEN = ")[^"]*(")', "local AUTH_TOKEN = `"$escaped`""
+
+# Guard: the plugin source must stay pure ASCII. Non-ASCII in the source is one
+# encoding accident away from mojibake in Studio (this exact bug shipped once).
+# The plugin now uses ASCII equivalents everywhere (- | * + ! [GREEN] ...), so
+# anything slipping back in is a mistake - fail loudly instead of installing it.
+$nonAscii = [regex]::Matches($content, "[^\x00-\x7F]")
+if ($nonAscii.Count -gt 0) {
+    Write-Host "[ERROR] Source has $($nonAscii.Count) non-ASCII char(s) - the plugin must stay ASCII (mojibake guard). Fix plugin/MultiAIPlugin.lua first." -ForegroundColor Red
+    exit 1
+}
 # Write UTF-8 WITHOUT a BOM. PowerShell 5.1's `Set-Content -Encoding utf8` prepends a
 # UTF-8 BOM (EF BB BF), which Luau rejects at parse time ("got Unicode character U+feff")
 # so the plugin fails to load. .NET's UTF8Encoding($false) emits no BOM.

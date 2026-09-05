@@ -27,14 +27,14 @@ local CONTROL_POLL_INTERVAL = 1.0
 -- MultiAI_StopPlaySignal). NOT PlaceId (0 for unsaved / identical across
 -- windows) nor JobId ("" in Edit). All persistence is pcall-guarded: if
 -- SetSetting/GetSetting fail, the id is still minted per-load (a non-persistent
--- fallback — strictly no worse than today, which carries no identity at all).
+-- fallback - strictly no worse than today, which carries no identity at all).
 -- `studioId` is a mutable upvalue: the __assign_studio_id handler reassigns it
 -- in place so the next poll's requestHeaders() carries the new id.
 -- ---------------------------------------------------------------------------
 -- Per-window identity: mint a FRESH id on every plugin load and never reuse a
 -- persisted one for routing. plugin:SetSetting is per-plugin USER-GLOBAL (shared
 -- by every Studio window on the machine), so persisting+reusing the id made all
--- windows send the same x-studio-id → the broker saw them as ONE contested studio
+-- windows send the same x-studio-id -> the broker saw them as ONE contested studio
 -- and could not address them separately. Minting fresh per load gives each window
 -- a unique id from its first poll. `studioId` stays a mutable upvalue so the
 -- (now dormant) __assign_studio_id handler can still reassign it in place.
@@ -61,7 +61,7 @@ local labelSent = false
 local AUTH_TOKEN = ""
 
 -- Header table for every broker request. ALWAYS carries x-studio-id (re-reading
--- the LIVE studioId upvalue on each call — never a load-time capture, so an
+-- the LIVE studioId upvalue on each call - never a load-time capture, so an
 -- __assign_studio_id reassignment is reflected on the very next poll). Adds
 -- x-mcp-token only when AUTH_TOKEN is configured, and x-studio-label only on the
 -- first send or after the label changes (steady-state polls send id-only).
@@ -87,7 +87,7 @@ end
 -- Play-mode server context: monitor for stop signals sent from edit mode.
 -- When ExecutePlayModeAsync is running, only plugin code in the Server context
 -- can call EndTest to terminate it. We poll a plugin setting as a cross-context
--- signal (plugin:SetSetting persists across edit ↔ play boundaries).
+-- signal (plugin:SetSetting persists across edit <-> play boundaries).
 -- ---------------------------------------------------------------------------
 if RunService:IsRunning() and RunService:IsServer() then
     task.spawn(function()
@@ -153,7 +153,7 @@ local function coerceValue(propName: string, value: any): any
         if COLOR3_PROPS[propName] and #value == 3 then
             return Color3.new(value[1], value[2], value[3])
         end
-        -- The BrickColor property needs a BrickColor value, NOT a Color3 —
+        -- The BrickColor property needs a BrickColor value, NOT a Color3 -
         -- assigning a Color3 to it errors. Build the nearest BrickColor.
         if BRICKCOLOR_PROPS[propName] and #value == 3 then
             return BrickColor.new(Color3.new(value[1], value[2], value[3]))
@@ -220,7 +220,7 @@ local function describeValue(v: any): string
     return tostring(v)
 end
 
--- ── Broker control commands (delivered on the control loop; never user tools) ──
+-- -- Broker control commands (delivered on the control loop; never user tools) --
 
 -- Reassign this Studio's id when the broker detects two windows sharing the same
 -- persisted MultiAI_StudioId (the "contested" case). The broker hands the second
@@ -245,7 +245,7 @@ end
 -- Arm the existing Server-context StopPlaySignal watcher (the RunService:IsServer
 -- block near the top of this file, UNTOUCHED) so a second session can stop a play
 -- test even while THIS plugin's command loop is yielded inside
--- ExecutePlayModeAsync. Only SetSetting — returns immediately, never blocks the
+-- ExecutePlayModeAsync. Only SetSetting - returns immediately, never blocks the
 -- control loop.
 handlers.__stop_play = function(_payload)
     pcall(function() plugin:SetSetting(MCP_STOP_SIGNAL_KEY, true) end)
@@ -333,7 +333,7 @@ handlers.run_luau = function(payload)
 
     -- Expression capture: if the whole snippet compiles as ONE expression, wrap
     -- it in `return (...)` so the evaluated value is reported (REPL-style).
-    -- Multi-statement snippets fail to compile as an expression → run as-is.
+    -- Multi-statement snippets fail to compile as an expression -> run as-is.
     local fn, err = loadstring(`return ({code})`, "MCPCommand")
     local isExpr = fn ~= nil
     if not fn then
@@ -345,7 +345,7 @@ handlers.run_luau = function(payload)
     local retValue = nil
     local ok, runErr = pcall(function()
         return withRecording("MCP run_luau", function()
-            -- xpcall captures a Lua traceback with the error message — a bare
+            -- xpcall captures a Lua traceback with the error message - a bare
             -- pcall only surfaces the message and mid-script errors used to
             -- truncate `output` with no error text at all.
             local results = table.pack(xpcall(fn, function(ex)
@@ -363,7 +363,7 @@ handlers.run_luau = function(payload)
         return { error = tostring(runErr), output = table.concat(outputs, "\n") }
     end
     local result: any = { ok = true, output = table.concat(outputs, "\n") }
-    -- Report a value when the snippet IS a bare expression (REPL semantics —
+    -- Report a value when the snippet IS a bare expression (REPL semantics -
     -- even a nil result is reported) OR when a plain multi-statement snippet
     -- explicitly returned one (scrutinize 2026-09-05 MINOR 3: `return 5` used
     -- to be captured but dropped because of the isExpr-only gate).
@@ -624,13 +624,13 @@ handlers.read_script = function(payload)
 end
 
 -- script_grep: Luau-pattern search across EVERY script's Source. Answers
--- "where is X defined?" in one round-trip instead of get_tree + N×read_script.
+-- "where is X defined?" in one round-trip instead of get_tree + Nxread_script.
 handlers.script_grep = function(payload)
     local pattern = payload.pattern
     if typeof(pattern) ~= "string" or pattern == "" then
         return { error = "pattern is required" }
     end
-    -- Match mode: "plain" (default) = literal substring — grep-like, safe for
+    -- Match mode: "plain" (default) = literal substring - grep-like, safe for
     -- text such as "print(" that would be a MALFORMED Luau pattern. "pattern" =
     -- Luau string pattern (metacharacters active). Validate the pattern ONCE so
     -- a malformed pattern fails with a clear error instead of crashing the
@@ -685,7 +685,7 @@ handlers.script_grep = function(payload)
     return { matches = matches, count = #matches, truncated = truncated, pattern = pattern }
 end
 
--- multi_edit: apply several script create/update ops in ONE command — one
+-- multi_edit: apply several script create/update ops in ONE command - one
 -- ChangeHistory undo step, one round-trip. Per-op failures are reported, not
 -- fatal: good ops commit, bad ops carry { error }.
 handlers.multi_edit = function(payload)
@@ -769,7 +769,7 @@ handlers.get_console_output = function(payload)
 
     local results = {}
     local counts = { Output = 0, Warning = 0, Error = 0, Info = 0 }
-    -- Walk newest→oldest so we can stop once we've collected `lines` items.
+    -- Walk newest->oldest so we can stop once we've collected `lines` items.
     for i = #history, 1, -1 do
         local entry = history[i]
         local typeName = entry.messageType.Name
@@ -848,7 +848,7 @@ handlers.find_instances = function(payload)
                 local ok, found = pcall(string.find, s, nameRaw)
                 return ok and found ~= nil
             end
-        else -- "substring" (default) — case-insensitive contains
+        else -- "substring" (default) - case-insensitive contains
             local lower = nameRaw:lower()
             nameMatcher = function(s) return s:lower():find(lower, 1, true) ~= nil end
         end
@@ -1015,7 +1015,7 @@ end
 -- Animation tools
 -- ---------------------------------------------------------------------------
 
--- Resolve target → Animator. Accepts Humanoid, AnimationController, or a
+-- Resolve target -> Animator. Accepts Humanoid, AnimationController, or a
 -- Model containing one. Auto-creates an Animator child if needed.
 local function getOrCreateAnimator(target: Instance): (Animator?, string?)
     local host: Instance? = nil
@@ -1331,9 +1331,9 @@ end
 
 -- ---------------------------------------------------------------------------
 -- set_camera: move the Edit-mode camera. Three ways to specify:
---   • position + look_at  (explicit Vector3 lists)
---   • preset + target_path + distance  (e.g. "top" view of a Model)
---   • preset alone (rotates around current focus or origin)
+--   * position + look_at  (explicit Vector3 lists)
+--   * preset + target_path + distance  (e.g. "top" view of a Model)
+--   * preset alone (rotates around current focus or origin)
 -- ---------------------------------------------------------------------------
 
 local CAMERA_DIRS = {
@@ -1501,7 +1501,7 @@ end
 
 -- ---------------------------------------------------------------------------
 -- get_bounds: real spatial extent of ANY instance (Part / Model / Folder / etc)
--- Returns min/max/center/size/radius — so the AI can reason about edges and
+-- Returns min/max/center/size/radius - so the AI can reason about edges and
 -- gaps, not just center positions.
 -- ---------------------------------------------------------------------------
 
@@ -1686,7 +1686,7 @@ handlers.get_parts_in_region = function(payload)
 end
 
 -- ---------------------------------------------------------------------------
--- find_path: PathfindingService → list of waypoints + status
+-- find_path: PathfindingService -> list of waypoints + status
 -- ---------------------------------------------------------------------------
 
 handlers.find_path = function(payload)
@@ -1809,7 +1809,7 @@ handlers.npc_walk_path = function(payload)
 end
 
 -- ---------------------------------------------------------------------------
--- drop_to_ground: raycast down from a part's center → snap to whatever's below
+-- drop_to_ground: raycast down from a part's center -> snap to whatever's below
 -- ---------------------------------------------------------------------------
 
 handlers.drop_to_ground = function(payload)
@@ -1839,7 +1839,7 @@ end
 
 -- ---------------------------------------------------------------------------
 -- align_to: snap one part's edge flush with another's edge on a given axis
--- side: "+x" | "-x" | "+y" | "-y" | "+z" | "-z" — which side of target to attach to
+-- side: "+x" | "-x" | "+y" | "-y" | "+z" | "-z" - which side of target to attach to
 -- ---------------------------------------------------------------------------
 
 local function partBounds(inst: Instance): (Vector3, Vector3, Vector3)
@@ -1947,7 +1947,7 @@ handlers.create_parts = function(payload)
 end
 
 -- ---------------------------------------------------------------------------
--- fill_terrain: TerrainService — fill a box/sphere with any material
+-- fill_terrain: TerrainService - fill a box/sphere with any material
 -- Use material="Air" to dig.
 -- ---------------------------------------------------------------------------
 
@@ -2578,7 +2578,7 @@ handlers.give_tool = function(payload)
 
     local player = findPlayer(payload.playerName)
     if not player then
-        return { error = `no player {payload.playerName and "named '" .. payload.playerName .. "'" or ""} — is Play mode running with at least one player?` }
+        return { error = `no player {payload.playerName and "named '" .. payload.playerName .. "'" or ""} - is Play mode running with at least one player?` }
     end
 
     local dest = payload.destination or "Backpack"
@@ -2827,7 +2827,7 @@ end
 handlers.get_player_info = function(payload)
     local player = findPlayer(payload.playerName)
     if not player then
-        return { exists = false, hint = "no player matched — is Play mode running with at least one player?" }
+        return { exists = false, hint = "no player matched - is Play mode running with at least one player?" }
     end
     return {
         exists = true,
@@ -2952,7 +2952,7 @@ handlers.diff_workspace = function(payload)
 
     -- Default action: compare
     local before = workspaceSnapshots[name]
-    if not before then return { error = `no snapshot "{name}" — call with action:"snapshot" first` } end
+    if not before then return { error = `no snapshot "{name}" - call with action:"snapshot" first` } end
 
     local after = snapshotTree(root)
     local added, removed, changed = {}, {}, {}
@@ -3277,14 +3277,14 @@ end
 -- ---------------------------------------------------------------------------
 -- Plugin UI: toolbar button + auto-connect
 -- The plugin auto-starts polling on load. The button's label (Name) updates
--- with an emoji to reflect live state — Studio re-renders toolbar button
+-- with an emoji to reflect live state - Studio re-renders toolbar button
 -- labels when .Name changes. Click the button to start/stop polling.
 --
 -- States:
---   🟢 MCP — connected, server responding to /poll
---   🟡 MCP — polling but server unreachable (retrying)
---   ⏳ MCP — polling, waiting for first response after startup
---   ⏸  MCP — polling stopped (user toggled off)
+--   [GREEN] MCP - connected, server responding to /poll
+--   [YELLOW] MCP - polling but server unreachable (retrying)
+--   [WAIT] MCP - polling, waiting for first response after startup
+--   [PAUSED]  MCP - polling stopped (user toggled off)
 -- ---------------------------------------------------------------------------
 
 local toolbar = plugin:CreateToolbar("Multi-AI")
@@ -3319,15 +3319,15 @@ local function setStatusVisual(state: string)
     statusButton:SetActive(state == "connected")
 end
 
--- ── Command watchdog (anti-wedge) ────────────────────────────────────────────
+-- -- Command watchdog (anti-wedge) --------------------------------------------
 -- Handlers run in their own scheduler-managed thread while THIS thread polls a
 -- done flag. If a handler never completes (e.g. run_luau require()ing a
--- DataStore/MemoryStore-bound module in Edit mode — the 2026-09-05 wedge), the
+-- DataStore/MemoryStore-bound module in Edit mode - the 2026-09-05 wedge), the
 -- watchdog returns a TIMEOUT result: the result still gets posted, the poll
 -- loop survives, and the broker/MCP client unblocks. The orphaned thread may
--- still finish later — its late finish() is ignored. Control handlers never
+-- still finish later - its late finish() is ignored. Control handlers never
 -- yield, so there the watchdog is a pure safety net.
--- NOTE: deliberately a done-flag + task.wait poll, NOT a BindableEvent wakeup —
+-- NOTE: deliberately a done-flag + task.wait poll, NOT a BindableEvent wakeup -
 -- task.spawn runs a fast handler to completion BEFORE this thread reaches its
 -- wait, so an event fired before anyone waits is LOST (lost-wakeup wedge, seen
 -- live 2026-09-05). Polling is race-free; fast handlers never even enter the
@@ -3360,7 +3360,7 @@ local function executeWithTimeout(handler, payload, timeoutS)
         end
         if not done then
             finish({
-                error = `command timed out after {timeoutS}s — handler still yielding (blocking API such as require/DataStore in Edit mode?). Executor recovered; the orphaned thread may still complete silently.`,
+                error = `command timed out after {timeoutS}s - handler still yielding (blocking API such as require/DataStore in Edit mode?). Executor recovered; the orphaned thread may still complete silently.`,
                 code = "TIMEOUT",
                 timed_out = true,
             })
@@ -3383,17 +3383,17 @@ local function executeCommand(cmd)
 end
 
 local function loop()
-    print(`[MultiAI] Polling started — {SERVER_URL}`)
+    print(`[MultiAI] Polling started - {SERVER_URL}`)
     while running do
         local ok, response = pcall(function()
             return HttpService:GetAsync(SERVER_URL .. "/poll", true, requestHeaders(true))
         end)
         if ok then
-            -- Server responded → connection healthy
+            -- Server responded -> connection healthy
             if not connected then
                 connected = true
                 setStatusVisual("connected")
-                print(`[MultiAI] ✓ Connected to {SERVER_URL}`)
+                print(`[MultiAI] + Connected to {SERVER_URL}`)
             end
             if response and response ~= "" and response ~= "{}" then
                 local decoded
@@ -3414,11 +3414,11 @@ local function loop()
                 end
             end
         else
-            -- Server unreachable → mark disconnected and back off
+            -- Server unreachable -> mark disconnected and back off
             if connected then
                 connected = false
                 setStatusVisual("disconnected")
-                warn(`[MultiAI] ✗ Disconnected — server unreachable. Retrying…`)
+                warn(`[MultiAI] ! Disconnected - server unreachable. Retrying...`)
             end
             task.wait(2)
         end
@@ -3429,11 +3429,11 @@ local function loop()
     print("[MultiAI] Polling stopped")
 end
 
--- ── Control loop ──
+-- -- Control loop --
 -- A SECOND, independent poll loop on a short interval. Unlike the command loop
 -- (which yields for the full duration of a long handler such as
 -- ExecutePlayModeAsync), the control loop only ever dispatches __assign_studio_id
--- / __stop_play — handlers that just SetSetting/mutate an upvalue and return — so
+-- / __stop_play - handlers that just SetSetting/mutate an upvalue and return - so
 -- it stays responsive during play mode. This is the channel that delivers
 -- cross-session play-stop and same-id collision reassignment. It never touches
 -- the command loop's `connected` visual. In inline mode the broker 404s
@@ -3479,7 +3479,7 @@ local pickerWidget = plugin:CreateDockWidgetPluginGui(
     "MultiAISessionPicker",
     DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, true, 300, 420, 240, 320)
 )
-pickerWidget.Title = "Multi-AI — sessions"
+pickerWidget.Title = "Multi-AI - sessions"
 pickerWidget.Name = "MultiAISessionPicker"
 
 local pickerRoot = Instance.new("Frame")
@@ -3538,7 +3538,7 @@ end
 
 -- Rebuild the row list from a /studio/sessions response.
 local function renderSessions(data)
-    headerLabel.Text = `{studioLabel}  ·  #{string.sub(studioId, 1, 4)}`
+    headerLabel.Text = `{studioLabel}  |  #{string.sub(studioId, 1, 4)}`
     for _, child in pickerList:GetChildren() do
         if not child:IsA("UIListLayout") then child:Destroy() end
     end
@@ -3577,7 +3577,7 @@ local function renderSessions(data)
         state.Font = Enum.Font.Gotham
         state.TextSize = 12
         if isActive then
-            state.Text = "● active"
+            state.Text = "* active"
             state.TextColor3 = Color3.fromRGB(180, 220, 255)
         elseif session.paired_studio_id then
             state.Text = "in use"
@@ -3662,5 +3662,5 @@ statusButton.Click:Connect(function()
     end
 end)
 
--- ── Auto-start polling when the plugin loads ──
+-- -- Auto-start polling when the plugin loads --
 startPolling()
