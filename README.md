@@ -1,4 +1,4 @@
-# Roblox Multi-AI
+# Roblox Multi-AI (v6.1)
 
 ระบบ AI หลายตัวทำงานร่วมกันสร้างเกม Roblox ผ่าน Roblox Studio
 ใช้ Claude Code เป็น Orchestrator และ MCP Server เป็นสะพานเชื่อมไปยัง Studio
