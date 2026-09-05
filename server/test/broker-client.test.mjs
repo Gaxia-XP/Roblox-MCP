@@ -425,3 +425,53 @@ test("ensureBroker STEP B: unrelated process on the port -> FATAL non-broker err
     );
   } finally { stranger.close(); }
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Transport-level watchdog injection (v6.1 review 2026-09-05): every COMMAND
+// transport budgets payload.timeout_s at the transport layer; submitControl
+// stays pristine; an explicit payload.timeout_s is preserved.
+// ───────────────────────────────────────────────────────────────────────────
+test("watchdog transport injection: submit/submitTo/fanoutSubmit budget payload.timeout_s; submitControl does not", async () => {
+  const seen = [];
+  const fake = http.createServer((rq, rs) => {
+    let data = "";
+    rq.on("data", (c) => (data += c));
+    rq.on("end", () => {
+      if (rq.method === "GET" && rq.url === "/health") {
+        rs.setHeader("content-type", "application/json");
+        return rs.end(JSON.stringify({ ok: true, role: "broker", proto: 1, brokerId: "fake-broker-w1" }));
+      }
+      if (rq.method === "POST" && rq.url === "/fe/register") {
+        return rs.end(JSON.stringify({ ok: true, session_token: "st-fake", brokerId: "fake-broker-w1" }));
+      }
+      if (rq.method === "POST" && rq.url === "/session/submit") {
+        seen.push(JSON.parse(data));
+        return rs.end(JSON.stringify({ ok: true }));
+      }
+      return rs.end(JSON.stringify({ ok: true })); // heartbeats / deregister
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => fake.listen(port, "127.0.0.1", r));
+  try {
+    const client = await ensureBroker({ port, host: "127.0.0.1", authToken: "", brandPrefix: "[t]", sessionId: "feedface-feed-feed-feed-feedface0001" });
+    await client.submit("op_a", { x: 1 }, 30_000);                 // → 35
+    await client.submit("op_b", { x: 2, timeout_s: 99 }, 30_000);  // explicit preserved
+    await client.submit("op_c", { x: 3 }, 300);                    // → floor 30
+    await client.submitTo("aa11bb33", "op_d", { x: 4 }, 60_000);   // → 65, target kept
+    await client.fanoutSubmit("op_e", { x: 5 }, 45_000);           // → 50, target "all"
+    await client.submitControl(null, "__stop_play", {}, 30_000);   // NOT budgeted
+    client.stopHeartbeat();
+    await client.deregister();
+
+    assert.equal(seen.length, 6);
+    assert.equal(seen[0].payload.timeout_s, 35);
+    assert.equal(seen[1].payload.timeout_s, 99);
+    assert.equal(seen[2].payload.timeout_s, 30);
+    assert.equal(seen[3].payload.timeout_s, 65);
+    assert.equal(seen[3].target, "aa11bb33");
+    assert.equal(seen[4].payload.timeout_s, 50);
+    assert.equal(seen[4].target, "all");
+    assert.equal(seen[5].payload.timeout_s, undefined); // control path untouched
+  } finally { fake.close(); }
+});

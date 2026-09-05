@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 // redactHeaders is imported to keep the Task-1 lib in this file's dependency
 // graph (parity with the broker's logging surface); the FE client logs nothing
 // secret itself, so it is re-exported for callers that need it.
-import { redactHeaders } from "./http-bridge.mjs";
+import { redactHeaders, watchdogBudget } from "./http-bridge.mjs";
 import { createRegistry } from "./registry.mjs";
 import { createBrokerCore } from "./broker-core.mjs";
 
@@ -265,6 +265,7 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
 
   async function submitTo(studioId, type, payload, timeoutMs = 30_000) {
     await ensureRegistered();
+    payload = watchdogBudget(payload, timeoutMs); // anti-wedge (see http-bridge.watchdogBudget)
     const r = await httpJson({
       port, host, method: "POST", path: "/session/submit", headers: baseHeaders(),
       body: { session_id: sessionId, type, payload, target: studioId, timeout_ms: timeoutMs },
@@ -276,6 +277,7 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
 
   async function submit(type, payload, timeoutMs = 30_000) {
     await ensureRegistered();
+    payload = watchdogBudget(payload, timeoutMs); // anti-wedge (see http-bridge.watchdogBudget)
     const r = await httpJson({
       port, host, method: "POST", path: "/session/submit", headers: baseHeaders(),
       body: { session_id: sessionId, type, payload, timeout_ms: timeoutMs },
@@ -291,6 +293,9 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
   // enqueue + return immediately ({ ok:true, control:true, ... }) rather than
   // blocking on a plugin result. `target` may be null → broker resolves the
   // paired/auto studio (returns a typed {error,code} on an unresolved target).
+  // NOTE: submitControl is deliberately NOT watchdog-budgeted — control-queue
+  // commands (__stop_play/__assign_studio_id) run in the plugin's control loop,
+  // whose handlers are non-yielding one-liners and are never watched.
   async function submitControl(target, type, payload, timeoutMs = 30_000) {
     await ensureRegistered();
     const r = await httpJson({
@@ -305,6 +310,7 @@ function makeRemoteClient({ port, host, authToken, sessionId, brokerId, httpServ
   // ── Fan-out (target:"all") — broker-core resolves { fanout, results, ok, failed } ──
   async function fanoutSubmit(type, payload, timeoutMs = 30_000) {
     await ensureRegistered();
+    payload = watchdogBudget(payload, timeoutMs); // anti-wedge (see http-bridge.watchdogBudget)
     const r = await httpJson({
       port, host, method: "POST", path: "/session/submit", headers: baseHeaders(),
       body: { session_id: sessionId, type, payload, target: "all", timeout_ms: timeoutMs },

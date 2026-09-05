@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import { createBridge, redactHeaders } from "../lib/http-bridge.mjs";
+import { createBridge, redactHeaders, watchdogBudget } from "../lib/http-bridge.mjs";
 
 // Start a bridge on an ephemeral port; return {port, bridge, close}.
 function startBridge(opts = {}) {
@@ -109,4 +109,31 @@ test("EADDRINUSE -> child process exits 1 with FATAL log", async () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /FATAL/);
   assert.match(r.stderr, /already in use/);
+});
+
+// ── watchdogBudget: transport-level anti-wedge injection ────────────────────
+test("watchdogBudget: wall+5s slack floored at 30; explicit preserved; null-safe", () => {
+  assert.equal(watchdogBudget({ a: 1 }, 30_000).timeout_s, 35);
+  assert.equal(watchdogBudget({ a: 1 }, 65_000).timeout_s, 70);
+  assert.equal(watchdogBudget({ a: 1 }, 300).timeout_s, 30); // floor
+  assert.equal(watchdogBudget({ a: 1, timeout_s: 99 }, 60_000).timeout_s, 99);
+  assert.deepEqual(watchdogBudget(null, 30_000), { timeout_s: 35 });
+  assert.deepEqual(watchdogBudget(undefined), { timeout_s: 35 }); // default 30s
+});
+
+test("inline submit injects payload.timeout_s into the delivered command; /result resolves the submit", async () => {
+  const { port, bridge, close } = await startBridge();
+  try {
+    const done = bridge.submit("watchdog_ping", { x: 1 }, 30_000);
+    const res = await req(port, { path: "/poll" });
+    assert.equal(res.status, 200);
+    const cmd = JSON.parse(res.body);
+    assert.equal(cmd.type, "watchdog_ping");
+    assert.equal(cmd.payload.x, 1);
+    assert.equal(cmd.payload.timeout_s, 35); // injected by the transport, not the caller
+    const rres = await req(port, { method: "POST", path: `/result/${cmd.id}`, body: JSON.stringify({ ok: true }) });
+    assert.equal(rres.status, 200);
+    const r = await done;
+    assert.ok(!r.error, "submit promise resolves via the /result round-trip");
+  } finally { close(); }
 });

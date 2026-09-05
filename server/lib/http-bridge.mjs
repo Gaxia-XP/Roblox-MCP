@@ -152,6 +152,26 @@ export function createCommandQueue() {
   return { pending, waiters, deliverOrQueue, removePending, parkWaiter };
 }
 
+// ── Plugin watchdog budget (anti-wedge) ──────────────────────────────────────
+// The plugin runs every COMMAND-loop command under a watchdog that returns a
+// TIMEOUT result at `payload.timeout_s`; without it a handler wedged on a
+// yielding API (e.g. require() of a DataStore-bound module in Edit mode) pins
+// the poll loop until the plugin's own 600s fallback. The budget is the
+// caller's wall-clock (+5s slack, floored at 30s) so a wedged op frees the
+// executor right after the client-side deadline would have fired anyway, while
+// legitimate long ops keep their full budget. Injected at the TRANSPORT layer
+// (here for inline mode + broker-client's three command transports) so EVERY
+// submit path — present or future — is covered and no call site can bypass it.
+// Control-queue commands (__stop_play / __assign_studio_id) are deliberately
+// NOT budgeted: their handlers are non-yielding one-liners and never watched.
+export function watchdogBudget(payload, timeoutMs) {
+  if (!payload || typeof payload !== "object") payload = {};
+  if (payload.timeout_s === undefined) {
+    payload.timeout_s = Math.max(30, Math.ceil((timeoutMs ?? 30_000) / 1000) + 5);
+  }
+  return payload;
+}
+
 export function createBridge({
   port,
   host = "127.0.0.1",
@@ -173,6 +193,7 @@ export function createBridge({
   let hosts = allowedHosts || makeHostSet(host, port);
 
   function submit(type, payload, timeoutMs = defaultTimeoutMs) {
+    payload = watchdogBudget(payload, timeoutMs); // anti-wedge (see watchdogBudget)
     return new Promise((resolve) => {
       const id = randomUUID();
       const cmd = { id, type, payload };

@@ -323,17 +323,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const pin = await resolveSessionTarget(args.studio_target);
     if (pin && pin.error) return emResult({ ok: false, via: "editable_mesh", ...pin });
     // Composite batches build their payloads INSIDE importViaEditableMesh, so
-    // they bypass the CallTool chokepoint injection above. Inject the plugin
-    // watchdog budget HERE as well — otherwise these commands fall back to the
-    // plugin's 600s watchdog while the per-batch wall is ~30s (scrutinize
-    // 2026-09-05 MAJOR 2: composite submits must never skip timeout_s).
-    const watchdogBudget = (payload, timeoutMs) => ({
-      ...payload,
-      timeout_s: Math.max(30, Math.ceil((timeoutMs ?? 30_000) / 1000) + 5),
-    });
+    // they used to bypass the CallTool chokepoint injection. That whole
+    // mechanism moved to the TRANSPORT layer (watchdogBudget in http-bridge/
+    // broker-client) — every submit path is budgeted there now, so nothing is
+    // injected here. (scrutinize 2026-09-05 MAJOR 2: composite submits must
+    // never skip timeout_s.)
     const pinnedSubmit = pin && pin.studioId
-      ? (type, payload, timeoutMs) => submitTo(pin.studioId, type, watchdogBudget(payload, timeoutMs), timeoutMs)
-      : (type, payload, timeoutMs) => submit(type, watchdogBudget(payload, timeoutMs), timeoutMs);
+      ? (type, payload, timeoutMs) => submitTo(pin.studioId, type, payload, timeoutMs)
+      : undefined; // default param = the global submit
     return await importViaEditableMesh(args, pinnedSubmit); // EditableMesh fallback (Task 7) — builds its own content shape
   }
 
@@ -745,14 +742,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   // wall-clock budget clears the tool's own deadline plus slack (a long-running
   // plugin op must not be cut off by the fixed 30s wall).
   const budget = toolTimeoutMs(name, args);
-  // ── Plugin watchdog budget (anti-wedge) ──
-  // The plugin runs every command under a watchdog that returns a TIMEOUT result
-  // at `payload.timeout_s`, so a handler wedged on a yielding API (e.g. require()
-  // of a DataStore-bound module in Edit mode) can never block the poll loop
-  // forever. Match the watchdog to THIS tool's wall-clock budget (+5s slack):
-  // legitimate long ops keep their full budget; wedged ones free the executor
-  // right after the client-side deadline would have fired anyway.
-  payload.timeout_s = Math.max(30, Math.ceil(budget / 1000) + 5);
+  // (Plugin watchdog budgeting lives in the TRANSPORT layer now — watchdogBudget
+  // in http-bridge/broker-client — so EVERY submit path, including early-return
+  // composites (insert_uploaded_model / import_blender_model), is covered and
+  // no call site can bypass it. The per-call wall-clock budget is passed to the
+  // submit calls below, which is exactly what the transport derives
+  // payload.timeout_s from.)
   const route = routeCall({ name, args, sessionTarget: SESSION_TARGET });
   let result;
   switch (route.kind) {
