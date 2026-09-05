@@ -322,9 +322,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // across studios on a mid-sequence re-pair.
     const pin = await resolveSessionTarget(args.studio_target);
     if (pin && pin.error) return emResult({ ok: false, via: "editable_mesh", ...pin });
+    // Composite batches build their payloads INSIDE importViaEditableMesh, so
+    // they bypass the CallTool chokepoint injection above. Inject the plugin
+    // watchdog budget HERE as well — otherwise these commands fall back to the
+    // plugin's 600s watchdog while the per-batch wall is ~30s (scrutinize
+    // 2026-09-05 MAJOR 2: composite submits must never skip timeout_s).
+    const watchdogBudget = (payload, timeoutMs) => ({
+      ...payload,
+      timeout_s: Math.max(30, Math.ceil((timeoutMs ?? 30_000) / 1000) + 5),
+    });
     const pinnedSubmit = pin && pin.studioId
-      ? (type, payload, timeoutMs) => submitTo(pin.studioId, type, payload, timeoutMs)
-      : submit;
+      ? (type, payload, timeoutMs) => submitTo(pin.studioId, type, watchdogBudget(payload, timeoutMs), timeoutMs)
+      : (type, payload, timeoutMs) => submit(type, watchdogBudget(payload, timeoutMs), timeoutMs);
     return await importViaEditableMesh(args, pinnedSubmit); // EditableMesh fallback (Task 7) — builds its own content shape
   }
 
@@ -370,7 +379,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       payload = { path: args.path, source: args.source };
       break;
     case "script_grep":
-      payload = { pattern: args.pattern, max_results: args.max_results };
+      payload = { pattern: args.pattern, max_results: args.max_results, pattern_mode: args.pattern_mode };
       break;
     case "multi_edit":
       payload = { scripts: args.scripts };

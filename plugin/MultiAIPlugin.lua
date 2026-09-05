@@ -363,7 +363,11 @@ handlers.run_luau = function(payload)
         return { error = tostring(runErr), output = table.concat(outputs, "\n") }
     end
     local result: any = { ok = true, output = table.concat(outputs, "\n") }
-    if isExpr then
+    -- Report a value when the snippet IS a bare expression (REPL semantics —
+    -- even a nil result is reported) OR when a plain multi-statement snippet
+    -- explicitly returned one (scrutinize 2026-09-05 MINOR 3: `return 5` used
+    -- to be captured but dropped because of the isExpr-only gate).
+    if isExpr or retValue ~= nil then
         result.returned = true
         result.return_value = describeValue(retValue)
     end
@@ -626,6 +630,22 @@ handlers.script_grep = function(payload)
     if typeof(pattern) ~= "string" or pattern == "" then
         return { error = "pattern is required" }
     end
+    -- Match mode: "plain" (default) = literal substring — grep-like, safe for
+    -- text such as "print(" that would be a MALFORMED Luau pattern. "pattern" =
+    -- Luau string pattern (metacharacters active). Validate the pattern ONCE so
+    -- a malformed pattern fails with a clear error instead of crashing the
+    -- whole scan mid-walk (scrutinize 2026-09-05 MAJOR 1).
+    local mode = tostring(payload.pattern_mode or "plain")
+    if mode ~= "plain" and mode ~= "pattern" then
+        return { error = "pattern_mode must be 'plain' or 'pattern'" }
+    end
+    if mode == "pattern" then
+        local ok = pcall(string.find, "", pattern)
+        if not ok then
+            return { error = "invalid Luau pattern: " .. tostring(pattern) }
+        end
+    end
+    local plainText = mode == "plain"
     local maxResults = math.clamp(math.floor(tonumber(payload.max_results) or 50), 1, 200)
     local matches: { any } = {}
     local truncated = false
@@ -637,7 +657,7 @@ handlers.script_grep = function(payload)
                 local lineNo = 0
                 for line in (inst.Source .. "\n"):gmatch("([^\n]*)\n") do
                     lineNo += 1
-                    if string.find(line, pattern) then
+                    if string.find(line, pattern, 1, plainText) then
                         table.insert(matches, {
                             path = inst:GetFullName(),
                             name = inst.Name,
@@ -656,7 +676,7 @@ handlers.script_grep = function(payload)
     end
 
     for _, svcName in ipairs({ "Workspace", "ReplicatedStorage", "ServerScriptService", "ServerStorage",
-        "StarterGui", "StarterPack", "StarterPlayer", "StarterPlayerScripts", "Lighting", "SoundService", "ReplicatedFirst" }) do
+        "StarterGui", "StarterPack", "StarterPlayer", "Lighting", "SoundService", "ReplicatedFirst" }) do
         local ok, svc = pcall(function() return game:GetService(svcName) end)
         if ok and svc then searchContainer(svc) end
         if truncated then break end

@@ -6,7 +6,7 @@ const RAW_TOOLS = [
   {
     name: "run_luau",
     description:
-      "Execute arbitrary Luau code inside Roblox Studio. The code runs with full access to `game`, `workspace`, all services. Use `print(...)` to capture output. Errors are caught and returned.",
+      "Execute arbitrary Luau code inside Roblox Studio. The code runs with full access to `game`, `workspace`, all services. Use `print(...)` to capture output. A bare expression's value is returned as return_value. Errors are caught and returned with a traceback. NOTE: the code must yield periodically (e.g. task.wait) if it loops — a non-yielding infinite loop cannot be preempted and wedges the executor until Studio restarts.",
     inputSchema: {
       type: "object",
       properties: { code: { type: "string", description: "Luau source code" } },
@@ -1168,11 +1168,12 @@ const RAW_TOOLS = [
   {
     name: "script_grep",
     description:
-      "Search a Luau string pattern across EVERY script's source in the game (Scripts, LocalScripts, ModuleScripts). Returns path/line/snippet matches, capped at max_results. Far faster than get_tree+read_script scans for 'where is X defined?' questions in a big codebase.",
+      "Search a pattern across EVERY script's source in the game (Scripts, LocalScripts, ModuleScripts). pattern_mode:'plain' (default) = literal substring — safe for text like 'print('. pattern_mode:'pattern' = Luau string pattern. Returns path/line/snippet matches, capped at max_results. Far faster than get_tree+read_script scans for 'where is X defined?' questions in a big codebase.",
     inputSchema: {
       type: "object",
       properties: {
-        pattern: { type: "string", description: "Luau string pattern (plain text works as-is; e.g. 'NetService')." },
+        pattern: { type: "string", description: "Text or Luau pattern to find. Interpreted per pattern_mode." },
+        pattern_mode: { type: "string", enum: ["plain", "pattern"], default: "plain", description: "plain = literal substring (default, grep-like). pattern = Luau string pattern (metacharacters active)." },
         max_results: { type: "number", default: 50, description: "Cap on returned matches (1..200, default 50)." },
       },
       required: ["pattern"],
