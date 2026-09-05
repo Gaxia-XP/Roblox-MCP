@@ -25,7 +25,7 @@ You → Orchestrator (Claude Code) → [Designer / Builder / Scripter / UI / Tes
 
 ## ความสามารถหลัก
 
-### 76 MCP Tools
+### 85 MCP Tools
 
 **สร้าง / แก้ไข instance**
 `create_part` · `create_parts` (batch) · `create_instance` · `create_script` · `duplicate_instance` · `delete_instance` · `set_property` · `batch_set_property` (multi-prop in one round-trip) · `rename_instance` · `move_instance` · `insert_model` · `align_to` (edge-snap) · `drop_to_ground` (raycast snap) · `array_clone` (linear/grid/radial duplication)
