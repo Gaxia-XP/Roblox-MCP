@@ -40,19 +40,66 @@ local CONTROL_POLL_INTERVAL = 1.0
 -- (now dormant) __assign_studio_id handler can still reassign it in place.
 local studioId: string = HttpService:GenerateGUID(false)
 
--- Advisory display label (never a routing key): game name + short id suffix.
-local studioLabel: string = (function(): string
-    local name = "Studio"
-    local okName, gameName = pcall(function() return game.Name end)
-    if okName and typeof(gameName) == "string" and gameName ~= "" then
-        name = gameName
-    end
-    return `{name} #{string.sub(studioId, 1, 4)}`
-end)()
-
--- Tracks whether the current studioLabel has already been sent, so steady-state
--- polls omit x-studio-label and only re-send it when it changes.
+-- Advisory display label (never a routing key). DataModel.Name is often Place1
+-- even for published places; resolve marketplace metadata off the poll path.
+local studioLabel: string = ""
 local labelSent = false
+local labelGeneration = 0
+local resolvedPlaceId: number? = nil
+local resolvedPlaceName: string? = nil
+
+local function cleanPlaceName(value: any): string
+    if typeof(value) ~= "string" then return "" end
+    return (value:gsub("[%z\1-\31\127]", ""):match("^%s*(.-)%s*$") or "")
+end
+
+local function setStudioLabel(name: string)
+    local label = `{name} #{string.sub(studioId, 1, 4)}`
+    if label ~= studioLabel then
+        studioLabel = label
+        labelSent = false
+    end
+end
+
+local function fallbackPlaceName(): string
+    local name = cleanPlaceName(game.Name)
+    if name ~= "" and name ~= "Studio" and not name:match("^Place%d*$") then return name end
+    return game.PlaceId > 0 and `Place {game.PlaceId}` or "Unsaved Place"
+end
+
+local function refreshStudioLabel()
+    labelGeneration += 1
+    local generation = labelGeneration
+    local placeId = game.PlaceId
+    if resolvedPlaceId == placeId and resolvedPlaceName then
+        setStudioLabel(resolvedPlaceName)
+        return
+    end
+    setStudioLabel(fallbackPlaceName())
+    if placeId <= 0 then return end
+    task.spawn(function()
+        local ok, info = pcall(function()
+            return game:GetService("MarketplaceService"):GetProductInfo(placeId, Enum.InfoType.Asset)
+        end)
+        -- A slow response for a previously opened place must never rename this one.
+        if generation ~= labelGeneration or game.PlaceId ~= placeId then return end
+        local name = ok and typeof(info) == "table" and cleanPlaceName(info.Name) or ""
+        if name ~= "" then
+            resolvedPlaceId = placeId
+            resolvedPlaceName = name
+            setStudioLabel(name)
+        else
+            -- Retry transient API failures, never on every 0.5s poll.
+            task.delay(30, function()
+                if generation == labelGeneration and game.PlaceId == placeId then refreshStudioLabel() end
+            end)
+        end
+    end)
+end
+
+game:GetPropertyChangedSignal("PlaceId"):Connect(refreshStudioLabel)
+game:GetPropertyChangedSignal("Name"):Connect(refreshStudioLabel)
+refreshStudioLabel()
 
 -- Optional shared secret. Leave "" for the default (no auth). To require auth,
 -- set this to the same value as the server's ROBLOX_MCP_TOKEN env var, then
@@ -237,7 +284,7 @@ handlers.__assign_studio_id = function(payload)
     end
     pcall(function() plugin:SetSetting(STUDIO_ID_KEY, newId) end)
     studioId = newId
-    studioLabel = `Studio #{string.sub(studioId, 1, 4)}`
+    refreshStudioLabel()
     labelSent = false
     return { ok = true, studio_id = studioId }
 end

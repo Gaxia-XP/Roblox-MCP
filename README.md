@@ -1,4 +1,11 @@
-# Roblox Multi-AI (v6.1)
+# Roblox Multi-AI (v6.1.1)
+
+### v6.1.1 — ชื่อ Place ใน Studio
+- ดึงชื่อ Place ที่เผยแพร่แล้วด้วย MarketplaceService แบบ async แทนการใช้ `game.Name` ซึ่งมักเป็น `Place1`
+- อัปเดตเมื่อ Name/PlaceId เปลี่ยน พร้อมป้องกันผลค้นหาเก่าทับชื่อใหม่
+- เมื่อค้นไม่สำเร็จ ใช้ชื่อ local หรือ `Place <ID>` / `Unsaved Place` และลองใหม่หลัง 30 วินาที
+- ชื่อยังมีรหัสหน้าต่างต่อท้าย; ไม่เปลี่ยน routing ID หรือข้อมูลในเกม
+
 
 ระบบ AI หลายตัวทำงานร่วมกันสร้างเกม Roblox ผ่าน Roblox Studio
 ใช้ Claude Code เป็น Orchestrator และ MCP Server เป็นสะพานเชื่อมไปยัง Studio

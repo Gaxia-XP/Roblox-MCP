@@ -114,7 +114,7 @@ import { TOOLS } from "./tools.mjs";
 import { simulateInputOS, screenshotDiff, captureStudioWindow, captureScreenshot } from "./os-tools.mjs";
 
 const server = new Server(
-  { name: "roblox-studio", version: "6.1.0" },
+  { name: "roblox-studio", version: "6.1.1" },
   { capabilities: { tools: {} } }
 );
 
